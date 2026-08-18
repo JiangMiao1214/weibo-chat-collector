@@ -1,450 +1,129 @@
 # 当前状态与下一步
 
-更新时间：2026-06-14
+更新时间：2026-08-12
 
-## 项目位置
+## 当前结论
 
-```text
-D:\codex\weibo-chat-collector
-```
+项目主线已经确定为：collector 管理多账号、群聊、后台任务、SQLite 落库、监控、检索和删除；采集来源以微博 Web 客户端的内部 `query_messages.json` 接口为主。
 
-## 当前做到哪一步
+`weibo-chat-auto` 只用于：
 
-目前已经推进到第八步：网页版微博页面快照采集第一版。
+1. 每个账号扫码生成 `cookies.json`。
+2. 在对应群聊的 `query_messages.json` 请求中发现群 `id`。
 
-已完成内容：
+auto 的归档、查看器、AI 分析和数据库不进入 collector 主链路，collector 也不依赖 auto AI 才能采集或入库。
 
-- 第 0 步：确认项目边界。
-- 第 1 步：初始化项目骨架。
-- 第 2 步：实现 JSON/CSV 手动导入。
-- 第 3 步：实现消息列表、搜索接口和前端检索页面。
-- 第 4 步：实现批量软删除核心功能。
-- 第 4 步增强：实现回收站 / 已删除消息。
-- 第 5 步：实现时间段采集任务框架。
-- 第 6 步：实现微博实机验证记录、脱敏观察记录和采集适配器骨架。
-- 第 7 步：实现一个账号 + 一个群聊的本地文件采集闭环。
-- 第 8 步：实现网页版微博当前页面可见文本快照采集。
+网页快照和 JSON/CSV 导入仍保留在“高级工具 / 数据导入”，但网页跨域快照受 CORS、Private Network Access 和页面安全策略限制，不再是推荐主流程。
 
-## 已完成的能力
+## 已实现能力
 
-### 1. 项目骨架
+### Collector 基础能力
 
-已建立目录：
+- FastAPI 后端、React + TypeScript + Vite 前端和 SQLite 数据库。
+- 多账号、多群聊隔离，并统一在一个本地数据库中管理。
+- 消息列表、详情、关键词与多条件筛选、软删除、回收站恢复和彻底删除。
+- JSON/CSV 文件导入与网页快照显式导入。
+- 文字、图片、文件、链接、视频等消息和附件元数据的数据模型。
 
-```text
-backend/
-frontend/
-data/
-  attachments/
-  imports/
-docs/
-scripts/
-```
+### 微博 API 目标与凭据
 
-### 2. 数据库基础表
+- `POST /api/weibo-api/targets` 创建或更新账号、群聊和微博群 ID 绑定。
+- 群 ID 保存到 `chat_groups.source_group_id`，同一账号下不能把两个本地群绑定到相同源群 ID。
+- `PUT /api/weibo-api/accounts/{account_id}/cookies` 导入 Puppeteer Cookie 数组。
+- 每个账号的 Cookie 保存为 `data/auth/account-<id>.cookies.json`。
+- POSIX 系统收紧为目录 `0700`、文件 `0600`；`data/auth/` 不进入 Git。
+- Cookie 值不写入数据库，也不由状态或任务 API 返回。
+- `GET /api/weibo-api/status` 只返回文件、可用域、非空且未在客户端判定过期的 `SUB`、数量和更新时间等非敏感状态；真实登录有效性仍由微博请求决定。
 
-已创建 SQLite 数据库：
+### 后台全局串行队列
+
+`POST /api/collection-jobs/weibo-api` 返回 `202` 并创建 `weibo_api_v2` 任务，不同步执行采集。
+
+所有账号共用一个后台 worker 和一个活动位：
 
 ```text
-data/weibo_chat_collector.sqlite3
+queued -> awaiting_confirmation -> running -> completed
+                                 \-> stopped
 ```
 
-已建表：
+- 队首任务先进入 `awaiting_confirmation`。用户确认已经关闭微博 App 和网页后，才进入 `running`。
+- `awaiting_confirmation` 也占用活动位，因此后续任务继续保持 `queued`。
+- 任务列表提供队列位置、attempt 次数、页数、最早时间检查点、`next_max_mid`、过滤/重复/失败计数和停止原因。
+- 达到单次运行页数上限会进入 `stopped` 并保留断点，不会把尚未覆盖完整的范围标成完成。
 
-- `weibo_accounts`
-- `chat_groups`
-- `chat_users`
-- `group_members`
-- `messages`
-- `attachments`
-- `collection_jobs`
-- `weibo_verification_reports`
-- `weibo_interface_observations`
-- `browser_page_captures`
-- `deletion_jobs`
-- `import_batches`
-- `search_indexes`
+### 逐页事务与断点续传
 
-### 3. 手动导入
+- 采集器从新消息向旧消息分页，严格只入库闭区间 `range_start <= sent_at <= range_end` 内的消息。
+- 每次请求处理一页。该页的消息、去重与过滤计数、`collection_job_pages` 记录、任务/attempt 累计值和 `next_max_mid` 在同一事务中提交。
+- 请求失败、响应解析失败或事务失败时，本页不会写入，也不会推进页数、计数或 `next_max_mid`。
+- 人工续传复用同一个任务和已提交的 `next_max_mid`；任务重新进入 `queued`，再次轮到后需重新确认，确认时新增 `collection_job_attempts` 记录。
+- `collection_job_pages` 记录每页请求与下一游标，`UNIQUE(job_id, request_max_mid)` 防止同一任务重复提交同一请求游标。
+- `collector_runtime_state` 保存 worker 租约、当前任务、全局请求计数和下一次允许请求时间。
 
-已实现：
+### 节流、错误与停止
 
-- JSON 导入。
-- CSV 导入。
-- 自动创建账号。
-- 自动创建群聊。
-- 自动创建用户。
-- 自动维护群成员。
-- 红包消息过滤。
-- 重复消息去重。
-- 消息入库。
-- 附件记录入库。
-- 本地附件原件复制逻辑。
+- 普通请求间隔随机 3–8 秒。
+- 全局每累计 20 个请求后，到下一请求的间隔使用 30–60 秒长等待，并替代普通等待，不叠加 3–8 秒。
+- 所有微博请求和本地处理错误均为零自动重试：当前 attempt 立即进入 `stopped`，不静默忽略，也不自动恢复。
+- HTTP 429、业务码 10023、10024 会设置 60 分钟 `resume_not_before`。冷却期内拒绝续传；到期后仍需人工续传、等待排队并再次确认。
+- 进程中断时，遗留的 `running` 任务会被标为 `stopped/process_interrupted`，不会在服务重启后自行继续。
+- 排队中或待确认任务可在发请求前停止；运行中安全停止在页边界生效。若一页请求已经发出，成功结果会完整提交后再停止。
 
-相关文件：
+### 高置信度消息过滤
 
-```text
-backend/app/importer.py
-scripts/import_messages.py
-docs/import-format.md
-data/imports/sample-import.json
-data/imports/sample-import.csv
+- 高置信度红包消息不写入 `messages`，计入 `filtered_red_packet_count`。
+- 高置信度粉丝群标识不写入 `messages`，当前计入 `filtered_system_notice_count`。
+- 普通问候和其他未命中高置信度规则的内容正常入库，不做宽泛的“系统消息全过滤”。
+
+### 前端信息架构
+
+- “采集任务”：只负责选择已配置账号/群聊、导入该账号 Cookie、选择时间范围并创建任务。
+- “采集监控”：每 5 秒刷新活动任务，展示队列、状态、页数、时间覆盖、断点、计数、原因，并提供确认启动、安全停止和沿断点续传。
+- “高级工具 / 数据导入”：账号与群 ID 配置、JSON/CSV 导入、网页快照生成/预览/显式导入。
+
+当前交付以桌面端为目标；移动端监控宽表、操作流程和完整浏览器验证延后。
+
+## 验证状态与边界
+
+本地自动化测试以临时 SQLite、模拟 API 响应和直接函数调用覆盖队列推进、确认、逐页提交、续传、节流、错误停止、风险冷却、安全停止、过滤和数据库迁移等实现行为。
+
+这些测试不覆盖：
+
+- 真实微博网络请求和账号端到端采集。
+- 真实浏览器中的完整前端交互链路。
+- 真实图片、文件、链接、视频等附件字段和附件下载。
+
+`query_messages.json` 是内部 Web API，不是微博公开、受支持或承诺稳定的官方 API。当前不能声称它已实机稳定，也不能声称附件字段或附件原件下载已经验证。
+
+## 运行方式
+
+要求 Python `>= 3.10`，推荐 Python `3.12`。后端和前端均从 collector 项目根目录启动，后端固定使用 8000：
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r backend/requirements.txt
+.venv/bin/python -m uvicorn app.main:app --reload --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
-### 4. 当前验证结果
+另一个终端：
 
-当前数据库包含样例验证数据：
-
-- 消息：4 条。
-- 附件：2 条。
-- 导入批次：4 条。
-
-这些数据来自 JSON/CSV 样例导入和重复导入去重测试。
-
-### 5. 消息列表和搜索
-
-已实现后端接口：
-
-- `GET /api/filter-options`
-- `GET /api/messages`
-- `GET /api/messages/{message_id}`
-- `POST /api/messages/delete-preview`
-- `POST /api/messages/soft-delete`
-- `POST /api/messages/restore-preview`
-- `POST /api/messages/restore`
-- `POST /api/messages/hard-delete-preview`
-- `POST /api/messages/hard-delete`
-
-已实现前端页面：
-
-- 消息列表。
-- 消息详情。
-- 按日期分组展示。
-- 游标分页加载更早消息。
-- 账号筛选。
-- 群聊筛选。
-- 用户筛选。
-- 日期范围筛选。
-- 关键词搜索。
-- 消息类型筛选。
-- 是否包含附件筛选。
-- 当前搜索结果删除预览。
-- 二次确认批量软删除。
-- 消息 / 回收站视图切换。
-- 查看已删除消息。
-- 批量恢复已删除消息。
-- 批量彻底删除已删除消息。
-
-相关文件：
-
-```text
-backend/app/api/messages.py
-frontend/src/main.tsx
-frontend/src/styles.css
-docs/message-api.md
-docs/recycle-bin.md
+```bash
+npm --prefix frontend install
+npm --prefix frontend run dev
 ```
 
-### 6. 大量消息展示
+前端 <http://127.0.0.1:5173> 的 `/api` 和 `/health` 代理到后端 `http://127.0.0.1:8000`。完整调试说明见 [run-and-debug.md](run-and-debug.md)。
 
-已实现适合每天 999+ 条消息的基础展示策略：
+## 下一步
 
-- 默认每页加载 100 条。
-- 服务端游标分页，不依赖大 offset 翻页。
-- 前端按日期分组。
-- 日期标题吸顶。
-- 点击“加载更早消息”继续追加下一页。
+建议只对当前账号有权访问的群聊做小范围、可人工核对的实机验证：
 
-游标字段：
+1. 在 auto 中扫码生成账号 A 的 Cookie，并立即导入 collector 的账号 A。
+2. 用账号 A 打开目标群聊，只记录 `query_messages.json?id=...` 的群 ID，不保存完整请求头。
+3. 创建很短时间范围的任务，观察 `queued -> awaiting_confirmation`，关闭微博 App/网页后人工确认。
+4. 对照微博页面核验时间边界、发送人、正文、重复项、红包、粉丝群标识和普通问候。
+5. 人工触发安全停止与续传，确认任务 ID 不变、attempt 增加且从原 `next_max_mid` 继续。
+6. 用脱敏真实响应校准附件字段，再决定附件原件下载策略。
+7. 对账号 B 重复独立扫码、群 ID 绑定和短范围验证，不复用 Cookie。
 
-- `before_sent_at`
-- `before_id`
-
-### 7. 本地联调状态
-
-第四步已在工作区临时库上完成验证：
-
-- 后端依赖已安装到 `D:\codex\weibo-chat-collector\.venv`。
-- 前端依赖已安装到 `D:\codex\weibo-chat-collector\frontend\node_modules`。
-- 后端编译检查通过。
-- 前端生产构建通过。
-- 后端 HTTP 接口验证通过。
-- 游标分页逻辑验证通过。
-- 删除预览逻辑验证通过。
-- 软删除逻辑在临时数据库验证通过。
-- 回收站查询逻辑验证通过。
-- 恢复逻辑在临时数据库验证通过。
-- 彻底删除逻辑在临时数据库验证通过。
-
-已验证接口结果：
-
-- `GET /api/messages?limit=5` 返回总数 `4`。
-- `GET /api/messages?keyword=Sample` 返回总数 `2`。
-- `GET /api/messages?has_attachment=true` 返回总数 `2`。
-- 临时库 `keyword=Sample` 删除预览 `2` 条。
-- 临时库软删除后 `keyword=Sample` 剩余 `0` 条。
-- 临时库软删除后回收站 `keyword=Sample` 为 `2` 条。
-- 临时库恢复后普通列表 `keyword=Sample` 为 `2` 条。
-- 临时库彻底删除后回收站 `keyword=Sample` 为 `0` 条。
-
-### 8. 时间段采集任务
-
-已实现后端接口：
-
-- `GET /api/collection-jobs`
-- `POST /api/collection-jobs`
-- `GET /api/collection-jobs/{job_id}`
-- `PATCH /api/collection-jobs/{job_id}/status`
-- `GET /api/import-files`
-- `POST /api/collection-jobs/single-group-file`
-
-已实现前端页面：
-
-- 顶部“采集任务”视图。
-- 账号选择。
-- 群聊选择。
-- 开始/结束时间选择。
-- 创建采集任务。
-- 选择 `data/imports` 下的 JSON/CSV 采集文件。
-- 执行一个账号 + 一个群聊的文件采集。
-- 按状态筛选任务列表。
-- 任务卡片展示。
-
-相关文件：
-
-```text
-backend/app/api/collection_jobs.py
-backend/app/api/single_group_collection.py
-backend/app/collectors/local_file.py
-frontend/src/main.tsx
-frontend/src/styles.css
-docs/collection-jobs.md
-docs/single-group-collection.md
-```
-
-已在临时数据库验证：
-
-- 创建任务成功。
-- 任务默认状态为 `pending`。
-- 任务列表总数增加 1。
-- 任务详情可读取。
-- 状态可更新为 `running` 和 `completed`。
-- 单群聊样例文件采集成功。
-- 样例 3 条消息中入库 2 条，红包过滤 1 条，附件记录 1 条。
-
-### 9. 微博实机验证记录
-
-已实现后端接口：
-
-- `GET /api/weibo-verifications`
-- `POST /api/weibo-verifications`
-- `GET /api/weibo-verifications/{report_id}`
-- `PATCH /api/weibo-verifications/{report_id}`
-- `POST /api/weibo-verifications/{report_id}/observations`
-
-已实现前端页面：
-
-- 顶部“微博验证”视图。
-- 创建账号 + 群聊维度的验证记录。
-- 勾选登录、群聊可见、历史可见、分页、图片、文件、链接、红包特征和风控观察。
-- 保存核验天数、风险级别、验证状态和备注。
-- 添加脱敏接口 / 页面观察 JSON。
-- 查看已有观察记录。
-
-已新增采集器骨架：
-
-```text
-backend/app/collectors/base.py
-backend/app/collectors/weibo_placeholder.py
-```
-
-已新增数据库迁移脚本：
-
-```text
-scripts/migrate_db.py
-```
-
-已在临时数据库验证：
-
-- 创建微博验证记录成功。
-- 保存验证结论成功。
-- 添加脱敏观察成功。
-- Cookie、Token、Authorization 等敏感字段拦截成功。
-
-相关文件：
-
-```text
-backend/app/api/weibo_verifications.py
-frontend/src/main.tsx
-frontend/src/styles.css
-docs/weibo-verification.md
-```
-
-### 10. 网页版微博页面快照
-
-已实现后端接口：
-
-- `GET /api/browser-capture/snippet`
-- `POST /api/browser-captures`
-- `GET /api/browser-captures`
-
-已实现前端页面：
-
-- 在“采集任务”视图生成网页快照脚本。
-- 复制网页快照脚本。
-- 查看最近网页快照。
-
-已新增脚本：
-
-```text
-scripts/configure_first_target.py
-```
-
-当前第一个目标配置为：
-
-- 账号：`微博账号A`
-- 群聊：`汉语从句研究会`
-- 时间段：`2026-06-15 17:00:00` 到当前时间。
-
-相关文件：
-
-```text
-backend/app/api/browser_captures.py
-frontend/src/main.tsx
-frontend/src/styles.css
-docs/browser-capture.md
-```
-
-已在临时数据库验证：
-
-- 网页快照脚本生成成功。
-- 模拟网页快照保存成功。
-- 快照列表读取成功。
-
-当前启动地址：
-
-```text
-后端：http://127.0.0.1:8000
-前端：http://127.0.0.1:5173
-```
-
-## 还没完成的内容
-
-以下内容尚未完成：
-
-- 微博真实自动采集适配器。
-- 真实微博账号和真实群聊名称替换。
-- 网页快照解析为正式消息。
-- 图片和文件从微博侧自动下载。
-- 统计仪表盘。
-- 上下文查看。
-- 导出和备份。
-
-## 接下来要做什么
-
-下一步建议继续第八步：运行第一条真实网页版微博快照，并基于快照做字段解析。
-
-目标是先让你在已打开的网页版微博群聊页面运行本地快照脚本，把当前可见消息文本保存到本地数据库，然后根据真实快照确认字段映射和附件保存方式。
-
-### 第八步需要确认的内容
-
-- 前端是否能生成网页快照脚本。
-- 微博页面运行脚本后是否成功保存快照。
-- 快照中的文本块是否包含目标群聊消息。
-- 消息 ID、发送人、发送时间、正文、消息类型字段如何映射。
-- 图片、文件、链接字段如何映射到 `attachments`。
-- 红包消息识别规则如何映射为过滤条件。
-- 如何将快照解析结果写入正式 `messages` 和 `attachments`。
-
-数据库：
-
-- 继续使用现有 `messages`、`attachments`、`weibo_accounts`、`chat_groups`、`chat_users` 表。
-- 先用普通 SQL 搜索。
-- 后续数据量大时再启用全文搜索索引。
-
-## 技术栈
-
-### 前端
-
-当前采用：
-
-- React。
-- TypeScript。
-- Vite。
-- lucide-react 图标库。
-- 原生 CSS。
-
-当前前端位置：
-
-```text
-frontend/
-```
-
-当前前端已接入消息列表、筛选项和消息详情 API。
-
-当前 Node 安装路径：
-
-```text
-D:\Dev\node
-```
-
-### 后端
-
-当前采用：
-
-- Python。
-- FastAPI。
-- Uvicorn。
-- pydantic-settings。
-- Python 标准库 `sqlite3`。
-
-当前后端位置：
-
-```text
-backend/
-```
-
-当前已有健康检查、筛选项、消息列表和消息详情接口。
-
-当前 Python 安装路径：
-
-```text
-D:\Dev\Python
-```
-
-### 数据库
-
-当前采用：
-
-- SQLite。
-
-数据库文件：
-
-```text
-data/weibo_chat_collector.sqlite3
-```
-
-选择 SQLite 的原因：
-
-- 适合本地项目起步。
-- 不需要额外安装数据库服务。
-- 方便备份和迁移。
-- 后续数据量变大时可以迁移到 PostgreSQL。
-
-### 脚本
-
-当前采用 Python 标准库实现：
-
-- 数据库初始化。
-- 数据库检查。
-- JSON/CSV 手动导入。
-
-脚本位置：
-
-```text
-scripts/
-```
-
-## 当前推荐动作
-
-下一步继续第八步：在“采集任务”页选择 `微博账号A`、`汉语从句研究会`、时间段 `2026-06-15 17:00:00` 到当前时间，生成并复制网页快照脚本，然后在已打开的微博群聊页面控制台运行。不要提供账号密码、Cookie 或 Token。
+在这些实机结果完成前，不应在发布说明中写“真实微博 API 已稳定可用”或“附件文件字段已验证”。

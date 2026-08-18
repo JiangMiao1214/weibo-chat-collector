@@ -11,11 +11,11 @@ from pydantic import BaseModel, Field
 from ..database import get_connection
 from ..importer import (
     build_content_hash,
+    classify_import_filter,
     ensure_group_member,
     ensure_user,
     insert_message,
     is_duplicate_message,
-    is_red_packet,
 )
 from .collection_jobs import ensure_account_and_group, normalize_datetime, parse_datetime
 from .messages import row_to_dict
@@ -410,7 +410,7 @@ def build_capture_script(
         "group_id": group_id,
         "range_start": range_start,
         "range_end": range_end,
-        "endpoint": "http://127.0.0.1:8001/api/browser-captures",
+        "endpoint": "http://127.0.0.1:8000/api/browser-captures",
         "script_version": SCRIPT_VERSION,
         "max_blocks": MAX_BLOCKS,
     }
@@ -483,7 +483,7 @@ def build_scroll_capture_script(
         "group_id": group_id,
         "range_start": range_start,
         "range_end": range_end,
-        "endpoint": "http://127.0.0.1:8001/api/browser-captures",
+        "endpoint": "http://127.0.0.1:8000/api/browser-captures",
         "script_version": SCRIPT_VERSION,
         "max_blocks": MAX_BLOCKS,
         "max_scroll_steps": 1600,
@@ -1125,12 +1125,18 @@ def import_browser_capture_messages(
     inserted_count = 0
     skipped_count = 0
     red_packet_count = 0
+    filtered_system_notice_count = 0
     duplicate_count = 0
 
     for item in result["items"]:
         message = dict(item["raw_message"])
-        if is_red_packet(message):
+        filter_kind = classify_import_filter(message)
+        if filter_kind == "red_packet":
             red_packet_count += 1
+            skipped_count += 1
+            continue
+        if filter_kind == "fansgroup_badge":
+            filtered_system_notice_count += 1
             skipped_count += 1
             continue
 
@@ -1170,6 +1176,8 @@ def import_browser_capture_messages(
             inserted_count = ?,
             skipped_count = ?,
             failed_count = 0,
+            filtered_red_packet_count = ?,
+            filtered_system_notice_count = ?,
             error_message = NULL
         WHERE id = ?
         """,
@@ -1177,6 +1185,8 @@ def import_browser_capture_messages(
             result["parsed_count"],
             inserted_count,
             skipped_count,
+            red_packet_count,
+            filtered_system_notice_count,
             collection_job_id,
         ),
     )
@@ -1215,4 +1225,5 @@ def import_browser_capture_messages(
         "skipped_count": skipped_count,
         "duplicate_count": duplicate_count,
         "red_packet_count": red_packet_count,
+        "filtered_system_notice_count": filtered_system_notice_count,
     }

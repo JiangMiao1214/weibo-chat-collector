@@ -1,19 +1,19 @@
 # 单群聊文件采集
 
-更新时间：2026-06-14
+更新时间：2026-08-12
 
 ## 功能目标
 
-第七步先实现一个群聊的数据采集闭环。
+本页说明保留的单群聊 JSON/CSV 导入闭环。
 
-当前版本采用“本地授权/导出文件采集”方式：你把整理好的 JSON 或 CSV 放入 `data/imports`，然后在前端选择账号、群聊、时间段和文件，系统会把对应时间段内的消息采集入库。
+把整理好的 JSON 或 CSV 放入 `data/imports`，然后在前端“高级工具 / 数据导入”中选择账号、群聊、时间段和文件，系统会把对应时间段内的消息导入数据库。
 
-该版本不直接登录微博，不保存账号密码、Cookie、Token 或 Authorization。后续确认真实字段映射和合规授权方式后，再把采集来源替换为真实微博适配器。
+文件导入本身不登录微博，也不读取 Cookie、Token 或 Authorization。当前项目另有独立的微博 API 任务主链路；文件导入作为离线兜底保留，并且不占 API 全局队列。
 
 ## 已实现能力
 
 - 列出 `data/imports` 下的 JSON/CSV 文件。
-- 前端在“采集任务”视图中选择采集文件。
+- 前端在“高级工具 / 数据导入”视图中选择采集文件。
 - 选择一个账号和一个群聊。
 - 选择开始时间和结束时间。
 - 执行单群聊文件采集。
@@ -61,6 +61,7 @@ POST /api/collection-jobs/single-group-file
 - `summary.inserted_count`：新增入库消息数。
 - `summary.skipped_count`：跳过消息数。
 - `summary.red_packet_count`：红包过滤数。
+- `summary.filtered_system_notice_count`：粉丝群标识过滤数。
 - `summary.duplicate_count`：重复消息数。
 - `summary.attachment_count`：附件记录数。
 - `summary.out_of_range_count`：时间段外消息数。
@@ -72,10 +73,10 @@ POST /api/collection-jobs/single-group-file
 前端顶部进入：
 
 ```text
-采集任务
+高级工具 / 数据导入
 ```
 
-左侧表单现在包含：
+文件采集表单包含：
 
 - 账号。
 - 群聊。
@@ -112,6 +113,7 @@ JSON 文件推荐格式：
 - 前端选择的账号和群聊优先，文件里的 `account`、`group` 只作为阅读提示。
 - `sent_at` 必须能解析成日期时间。
 - `message_type` 为 `red_packet`、`hongbao`、`weibo_red_packet` 时会跳过。
+- 原始字段或模板高置信命中红包、最佳手气、粉丝群“今日获得标识”时也会跳过；普通问候不会过滤。
 - 图片、文件、链接放在 `attachments` 数组里。
 - 如果附件包含可访问的本地 `local_path`，系统会复制到 `data/attachments`。
 - 如果只有 `source_url`，当前先记录链接和下载状态，不自动联网下载。
@@ -143,11 +145,6 @@ data/imports/single-group-sample.json
 
 后端编译和前端构建均已通过。
 
-## 下一步
+## 与 API 采集的关系
 
-下一步可以做两个方向：
-
-- 把第一个真实群聊的授权导出文件放入 `data/imports`，使用当前页面采集。
-- 根据第一个群聊的真实字段结构，整理真实微博适配器字段映射。
-
-第二个账号和第二个群聊后续复用同一套流程，只需要选择另一个账号、群聊和文件。
+新历史采集优先使用“采集任务”中的 API 队列；已有导出文件、异常恢复检查或字段对照仍可使用本页流程。不同账号和群聊共用同一导入实现，但数据会按 `account_id` 和 `group_id` 隔离。

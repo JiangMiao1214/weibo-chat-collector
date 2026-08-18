@@ -3,21 +3,13 @@ import hashlib
 import json
 import shutil
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-RED_PACKET_TYPES = {"red_packet", "hongbao", "weibo_red_packet"}
-RED_PACKET_TEXTS = {
-    "红包",
-    "[红包]",
-    "微博红包",
-    "[微博红包]",
-    "发了一个红包",
-    "领取了红包",
-}
+from .services.message_filter import MessageFilterKind, classify_message_filter
 
 
 @dataclass
@@ -29,6 +21,7 @@ class ImportSummary:
     inserted_count: int = 0
     skipped_count: int = 0
     red_packet_count: int = 0
+    filtered_system_notice_count: int = 0
     duplicate_count: int = 0
     attachment_count: int = 0
 
@@ -71,8 +64,13 @@ def import_file(
         )
 
         for raw_message in messages:
-            if is_red_packet(raw_message):
+            filter_kind = classify_import_filter(raw_message)
+            if filter_kind == "red_packet":
                 summary.red_packet_count += 1
+                summary.skipped_count += 1
+                continue
+            if filter_kind == "fansgroup_badge":
+                summary.filtered_system_notice_count += 1
                 summary.skipped_count += 1
                 continue
 
@@ -206,13 +204,39 @@ def ensure_group(connection: sqlite3.Connection, account_id: int, name: str) -> 
 def ensure_user(connection: sqlite3.Connection, message: dict[str, Any]) -> int:
     source_user_id = message.get("source_user_id")
     display_name = message.get("sender_name") or "unknown_user"
+    avatar_url = message.get("avatar_url")
 
     if source_user_id:
         row = connection.execute(
-            "SELECT id FROM chat_users WHERE source_user_id = ?",
+            """
+            SELECT
+                cu.id,
+                (
+                    SELECT MAX(gm.last_seen_at)
+                    FROM group_members gm
+                    WHERE gm.user_id = cu.id
+                ) AS latest_seen_at
+            FROM chat_users cu
+            WHERE cu.source_user_id = ?
+            """,
             (source_user_id,),
         ).fetchone()
         if row:
+            sent_at = message.get("sent_at")
+            latest_seen_at = row[1]
+            if latest_seen_at is None or (
+                sent_at is not None and str(sent_at) >= str(latest_seen_at)
+            ):
+                connection.execute(
+                    """
+                    UPDATE chat_users
+                    SET display_name = ?,
+                        avatar_url = COALESCE(?, avatar_url),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (display_name, avatar_url, int(row[0])),
+                )
             return int(row[0])
 
     row = connection.execute(
@@ -223,8 +247,8 @@ def ensure_user(connection: sqlite3.Connection, message: dict[str, Any]) -> int:
         return int(row[0])
 
     cursor = connection.execute(
-        "INSERT INTO chat_users (display_name, source_user_id) VALUES (?, ?)",
-        (display_name, source_user_id),
+        "INSERT INTO chat_users (display_name, source_user_id, avatar_url) VALUES (?, ?, ?)",
+        (display_name, source_user_id, avatar_url),
     )
     return int(cursor.lastrowid)
 
@@ -248,8 +272,25 @@ def ensure_group_member(
         )
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(group_id, user_id) DO UPDATE SET
-            display_name_in_group = excluded.display_name_in_group,
-            last_seen_at = excluded.last_seen_at
+            display_name_in_group = CASE
+                WHEN group_members.last_seen_at IS NULL THEN excluded.display_name_in_group
+                WHEN excluded.last_seen_at IS NULL THEN group_members.display_name_in_group
+                WHEN excluded.last_seen_at >= group_members.last_seen_at
+                    THEN excluded.display_name_in_group
+                ELSE group_members.display_name_in_group
+            END,
+            first_seen_at = CASE
+                WHEN group_members.first_seen_at IS NULL THEN excluded.first_seen_at
+                WHEN excluded.first_seen_at IS NULL THEN group_members.first_seen_at
+                WHEN excluded.first_seen_at < group_members.first_seen_at THEN excluded.first_seen_at
+                ELSE group_members.first_seen_at
+            END,
+            last_seen_at = CASE
+                WHEN group_members.last_seen_at IS NULL THEN excluded.last_seen_at
+                WHEN excluded.last_seen_at IS NULL THEN group_members.last_seen_at
+                WHEN excluded.last_seen_at > group_members.last_seen_at THEN excluded.last_seen_at
+                ELSE group_members.last_seen_at
+            END
         """,
         (group_id, user_id, display_name, sent_at, sent_at),
     )
@@ -334,27 +375,42 @@ def finish_collection_job(
             total_seen_count = ?,
             inserted_count = ?,
             skipped_count = ?,
-            failed_count = 0
+            failed_count = 0,
+            filtered_red_packet_count = ?,
+            filtered_system_notice_count = ?
         WHERE id = ?
         """,
         (
             summary.total_count,
             summary.inserted_count,
             summary.skipped_count,
+            summary.red_packet_count,
+            summary.filtered_system_notice_count,
             collection_job_id,
         ),
     )
 
 
 def is_red_packet(message: dict[str, Any]) -> bool:
-    message_type = str(message.get("message_type") or "").strip().lower()
-    if message_type in RED_PACKET_TYPES:
-        return True
+    """Compatibility wrapper around the shared high-confidence classifier."""
 
-    text = normalize_text(message.get("content_text") or "")
-    if text in RED_PACKET_TEXTS:
-        return True
-    return False
+    return classify_import_filter(message) == "red_packet"
+
+
+def classify_import_filter(message: Mapping[str, Any]) -> MessageFilterKind | None:
+    """Classify normalized imports together with any embedded raw payload."""
+
+    raw_payload = message.get("raw_payload")
+    if isinstance(raw_payload, str):
+        try:
+            decoded = json.loads(raw_payload)
+        except (json.JSONDecodeError, TypeError):
+            decoded = None
+        raw_payload = decoded if isinstance(decoded, Mapping) else None
+
+    combined = dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
+    combined.update(message)
+    return classify_message_filter(combined)
 
 
 def normalize_text(value: str) -> str:
@@ -392,7 +448,6 @@ def is_duplicate_message(
             WHERE account_id = ?
               AND group_id = ?
               AND source_message_id = ?
-              AND is_deleted = 0
             LIMIT 1
             """,
             (account_id, group_id, source_message_id),
@@ -408,7 +463,6 @@ def is_duplicate_message(
           AND user_id = ?
           AND sent_at = ?
           AND content_hash = ?
-          AND is_deleted = 0
         LIMIT 1
         """,
         (
@@ -459,10 +513,12 @@ def insert_message(
             message.get("message_type") or "text",
             message.get("content_text") or "",
             normalize_text(message.get("content_text") or ""),
-            json.dumps(message, ensure_ascii=False),
+            json.dumps(message.get("raw_payload", message), ensure_ascii=False),
             content_hash,
             collection_job_id,
-            1 if (message.get("message_type") == "system") else 0,
+            1
+            if message.get("is_system_message") or message.get("message_type") == "system"
+            else 0,
         ),
     )
     return int(cursor.lastrowid)

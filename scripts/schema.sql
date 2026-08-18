@@ -52,20 +52,103 @@ CREATE TABLE IF NOT EXISTS collection_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id INTEGER NOT NULL,
     group_id INTEGER NOT NULL,
+    source_group_id TEXT,
     range_start TEXT NOT NULL,
     range_end TEXT NOT NULL,
+    timezone_name TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+    page_size INTEGER NOT NULL DEFAULT 20,
     status TEXT NOT NULL DEFAULT 'pending',
+    next_max_mid TEXT NOT NULL DEFAULT '0',
+    checkpoint_oldest_at TEXT,
     started_at TEXT,
     finished_at TEXT,
+    page_count INTEGER NOT NULL DEFAULT 0,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
     total_seen_count INTEGER NOT NULL DEFAULT 0,
     inserted_count INTEGER NOT NULL DEFAULT 0,
     skipped_count INTEGER NOT NULL DEFAULT 0,
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    filtered_red_packet_count INTEGER NOT NULL DEFAULT 0,
+    filtered_system_notice_count INTEGER NOT NULL DEFAULT 0,
     failed_count INTEGER NOT NULL DEFAULT 0,
+    stop_code TEXT,
+    stop_reason TEXT,
+    last_http_status INTEGER,
+    last_error_code TEXT,
+    stop_requested_at TEXT,
+    confirmed_at TEXT,
+    last_progress_at TEXT,
+    heartbeat_at TEXT,
+    resume_not_before TEXT,
     error_message TEXT,
     collector_type TEXT NOT NULL DEFAULT 'manual_import',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (account_id) REFERENCES weibo_accounts(id),
     FOREIGN KEY (group_id) REFERENCES chat_groups(id)
+);
+
+CREATE TABLE IF NOT EXISTS collection_job_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    start_max_mid TEXT NOT NULL DEFAULT '0',
+    end_max_mid TEXT,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at TEXT,
+    page_count INTEGER NOT NULL DEFAULT 0,
+    total_seen_count INTEGER NOT NULL DEFAULT 0,
+    inserted_count INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    filtered_red_packet_count INTEGER NOT NULL DEFAULT 0,
+    filtered_system_notice_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    stop_code TEXT,
+    stop_reason TEXT,
+    last_http_status INTEGER,
+    last_error_code TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (job_id) REFERENCES collection_jobs(id),
+    UNIQUE (job_id, attempt_no)
+);
+
+CREATE TABLE IF NOT EXISTS collection_job_pages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    attempt_id INTEGER NOT NULL,
+    job_page_no INTEGER NOT NULL,
+    attempt_page_no INTEGER NOT NULL,
+    request_max_mid TEXT NOT NULL,
+    next_max_mid TEXT,
+    newest_sent_at TEXT,
+    oldest_sent_at TEXT,
+    raw_count INTEGER NOT NULL DEFAULT 0,
+    in_range_count INTEGER NOT NULL DEFAULT 0,
+    inserted_count INTEGER NOT NULL DEFAULT 0,
+    skipped_count INTEGER NOT NULL DEFAULT 0,
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    filtered_red_packet_count INTEGER NOT NULL DEFAULT 0,
+    filtered_system_notice_count INTEGER NOT NULL DEFAULT 0,
+    outside_range_count INTEGER NOT NULL DEFAULT 0,
+    fetched_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    committed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (job_id) REFERENCES collection_jobs(id),
+    FOREIGN KEY (attempt_id) REFERENCES collection_job_attempts(id),
+    UNIQUE (job_id, request_max_mid)
+);
+
+CREATE TABLE IF NOT EXISTS collector_runtime_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    worker_id TEXT,
+    lease_expires_at TEXT,
+    current_job_id INTEGER,
+    global_request_count INTEGER NOT NULL DEFAULT 0,
+    next_allowed_request_at TEXT,
+    last_request_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (current_job_id) REFERENCES collection_jobs(id)
 );
 
 CREATE TABLE IF NOT EXISTS weibo_verification_reports (
@@ -207,6 +290,7 @@ CREATE TABLE IF NOT EXISTS search_indexes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chat_groups_account_id ON chat_groups(account_id);
+CREATE INDEX IF NOT EXISTS idx_chat_groups_source_id ON chat_groups(account_id, source_group_id);
 CREATE INDEX IF NOT EXISTS idx_group_members_group_id ON group_members(group_id);
 CREATE INDEX IF NOT EXISTS idx_messages_account_group_sent_at ON messages(account_id, group_id, sent_at);
 CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id);
@@ -217,6 +301,10 @@ CREATE INDEX IF NOT EXISTS idx_messages_hash ON messages(account_id, group_id, u
 CREATE INDEX IF NOT EXISTS idx_attachments_message_id ON attachments(message_id);
 CREATE INDEX IF NOT EXISTS idx_attachments_hash ON attachments(content_hash);
 CREATE INDEX IF NOT EXISTS idx_collection_jobs_range ON collection_jobs(account_id, group_id, range_start, range_end);
+CREATE INDEX IF NOT EXISTS idx_collection_jobs_status ON collection_jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_collection_job_attempts_job_id ON collection_job_attempts(job_id, attempt_no);
+CREATE INDEX IF NOT EXISTS idx_collection_job_pages_job_id ON collection_job_pages(job_id, job_page_no);
+CREATE INDEX IF NOT EXISTS idx_collection_job_pages_attempt_id ON collection_job_pages(attempt_id, attempt_page_no);
 CREATE INDEX IF NOT EXISTS idx_weibo_verification_reports_account_group ON weibo_verification_reports(account_id, group_id);
 CREATE INDEX IF NOT EXISTS idx_weibo_verification_reports_status ON weibo_verification_reports(verification_status);
 CREATE INDEX IF NOT EXISTS idx_weibo_interface_observations_report_id ON weibo_interface_observations(report_id);

@@ -1,243 +1,295 @@
-# 建议数据模型
+# 当前数据模型
 
-## weibo_accounts
+更新时间：2026-08-12
 
-微博账号表。用于区分两个微博号的数据来源。
+SQLite schema 位于 `scripts/schema.sql`。后端启动时会初始化新表，并为旧数据库补齐 API v2 任务字段。
 
-- id
-- display_name
-- weibo_uid
-- login_profile_name
-- auth_type
-- is_active
-- notes
-- created_at
-- updated_at
+## 账号与群聊
 
-## chat_groups
+### weibo_accounts
 
-群聊表。
+- `id`
+- `display_name`
+- `weibo_uid`
+- `login_profile_name`
+- `auth_type`
+- `is_active`
+- `notes`
+- `created_at`
+- `updated_at`
 
-- id
-- account_id
-- name
-- source_group_id
-- description
-- is_active
-- created_at
-- updated_at
+`login_profile_name` 只记录不敏感的 Cookie 文件名。Cookie 内容不写入数据库，而是按账号保存到 `data/auth/account-<id>.cookies.json`；POSIX 文件权限为 `0600`，该目录不进入 Git，也不由 API 返回 Cookie 值。
 
-说明：同一个群名在不同账号下也应视为不同来源，必须通过 `account_id` 区分。
+### chat_groups
 
-## chat_users
+- `id`
+- `account_id`
+- `name`
+- `source_group_id`
+- `description`
+- `is_active`
+- `created_at`
+- `updated_at`
 
-群聊用户表。
+`source_group_id` 保存对应账号打开目标群聊时，`query_messages.json` 请求中的群 `id`。同名群在不同账号下仍是不同来源，必须通过 `account_id` 区分。
 
-- id
-- display_name
-- source_user_id
-- alias
-- avatar_url
-- notes
-- created_at
-- updated_at
+### chat_users
 
-## group_members
+- `id`
+- `display_name`
+- `source_user_id`
+- `alias`
+- `avatar_url`
+- `notes`
+- `created_at`
+- `updated_at`
 
-群成员关联表。
+### group_members
 
-- id
-- group_id
-- user_id
-- display_name_in_group
-- first_seen_at
-- last_seen_at
-- is_active
+- `id`
+- `group_id`
+- `user_id`
+- `display_name_in_group`
+- `first_seen_at`
+- `last_seen_at`
+- `is_active`
 
-## messages
+`(group_id, user_id)` 唯一。
 
-消息表。
+## API v2 任务持久化
 
-- id
-- account_id
-- group_id
-- user_id
-- source_message_id
-- sent_at
-- message_type
-- content_text
-- normalized_text
-- raw_payload
-- collection_job_id
-- is_red_packet
-- is_system_message
-- is_deleted
-- deleted_at
-- created_at
-- updated_at
+### collection_jobs
 
-建议索引：
+一条记录代表用户指定账号、群聊和时间范围的一项逻辑任务。停止后续传仍使用同一条任务记录。
 
-- account_id
-- group_id
-- user_id
-- sent_at
-- message_type
-- source_message_id
-- is_deleted
+身份与范围：
 
-去重建议：
+- `id`
+- `account_id`
+- `group_id`
+- `source_group_id`
+- `range_start`
+- `range_end`
+- `timezone_name`
+- `page_size`
+- `collector_type`
 
-- 优先使用 `account_id + group_id + source_message_id`。
-- 如果没有稳定消息 ID，则使用 `account_id + group_id + user_id + sent_at + content_hash`。
+状态与断点：
 
-## attachments
+- `status`
+- `next_max_mid`
+- `checkpoint_oldest_at`
+- `started_at`
+- `finished_at`
+- `confirmed_at`
+- `last_progress_at`
+- `heartbeat_at`
+- `stop_requested_at`
+- `resume_not_before`
 
-附件表。图片、文件、链接都作为附件保存。
+累计计数：
 
-- id
-- message_id
-- attachment_type
-- source_url
-- local_path
-- file_name
-- mime_type
-- file_size
-- content_hash
-- title
-- description
-- download_status
-- downloaded_at
-- created_at
+- `page_count`
+- `attempt_count`
+- `total_seen_count`
+- `inserted_count`
+- `skipped_count`
+- `duplicate_count`
+- `filtered_red_packet_count`
+- `filtered_system_notice_count`
+- `failed_count`
 
-`attachment_type` 可取值：
+停止与错误：
 
-- image
-- file
-- link
-- video
-- audio
-- unknown
+- `stop_code`
+- `stop_reason`
+- `last_http_status`
+- `last_error_code`
+- `error_message`
+- `created_at`
+- `updated_at`
 
-## collection_jobs
+当前主采集器类型是 `weibo_api_v2`，主状态流为：
 
-采集任务表。每次用户选择时间段采集都会生成一条记录。
+```text
+queued -> awaiting_confirmation -> running -> completed
+                                 \-> stopped
+```
 
-- id
-- account_id
-- group_id
-- range_start
-- range_end
-- status
-- started_at
-- finished_at
-- total_seen_count
-- inserted_count
-- skipped_count
-- failed_count
-- error_message
-- collector_type
-- created_at
+`pending`、`failed`、`cancelled` 仍保留给早期/兼容任务。当前 API v2 运行错误写为 `stopped`。
 
-## weibo_verification_reports
+`filtered_system_notice_count` 是兼容字段名；当前 API v2 用它统计被高置信度规则过滤的粉丝群标识，不代表所有系统消息。
 
-微博实机验证记录表。用于记录某个微博账号对某个群聊的可采集性结论。
+### collection_job_attempts
 
-- id
-- account_id
-- group_id
-- can_login
-- can_view_group
-- can_view_history
-- history_days_checked
-- can_page_history
-- can_access_images
-- can_access_files
-- can_access_links
-- red_packet_identified
-- rate_limit_observed
-- risk_level
-- verification_status
-- notes
-- created_at
-- updated_at
+一次用户确认启动对应一个 attempt。沿断点续传会增加 attempt，不会新建 collection job。
 
-说明：该表只记录验证结论，不保存 Cookie、Token、Authorization、账号密码等敏感凭据。
+- `id`
+- `job_id`
+- `attempt_no`
+- `status`
+- `start_max_mid`
+- `end_max_mid`
+- `started_at`
+- `finished_at`
+- `page_count`
+- `total_seen_count`
+- `inserted_count`
+- `skipped_count`
+- `duplicate_count`
+- `filtered_red_packet_count`
+- `filtered_system_notice_count`
+- `failed_count`
+- `stop_code`
+- `stop_reason`
+- `last_http_status`
+- `last_error_code`
+- `created_at`
 
-## weibo_interface_observations
+`(job_id, attempt_no)` 唯一。新 attempt 的 `start_max_mid` 取任务当前已提交的 `next_max_mid`。
 
-微博接口 / 页面观察记录表。用于保存脱敏后的字段结构和样例，为后续真实采集器做字段映射。
+### collection_job_pages
 
-- id
-- report_id
-- observation_type
-- method
-- endpoint_path
-- request_fields_json
-- response_fields_json
-- sample_payload_json
-- pagination_fields_json
-- redaction_notes
-- created_at
+一条记录代表一个成功事务提交的 API 页：
 
-说明：所有 JSON 样例都必须先脱敏。后端会拦截常见鉴权字段，避免误保存敏感凭据。
+- `id`
+- `job_id`
+- `attempt_id`
+- `job_page_no`
+- `attempt_page_no`
+- `request_max_mid`
+- `next_max_mid`
+- `newest_sent_at`
+- `oldest_sent_at`
+- `raw_count`
+- `in_range_count`
+- `inserted_count`
+- `skipped_count`
+- `duplicate_count`
+- `filtered_red_packet_count`
+- `filtered_system_notice_count`
+- `outside_range_count`
+- `fetched_at`
+- `committed_at`
 
-## browser_page_captures
+`(job_id, request_max_mid)` 唯一。失败请求或回滚事务不会产生 page 记录，也不会更新 job/attempt 计数或任务 `next_max_mid`。
 
-网页版微博页面快照表。用于保存用户在已登录微博页面运行本地快照脚本后回传的可见文本块。
+同一事务内提交该页的消息、附件元数据、page 记录、job 累计值、attempt 累计值和下一断点，从而避免半页成功。
 
-- id
-- account_id
-- group_id
-- range_start
-- range_end
-- page_url
-- page_title
-- captured_at
-- visible_text
-- blocks_json
-- script_version
-- status
-- notes
-- created_at
+### collector_runtime_state
 
-说明：该表保存页面可见文本快照，用于后续分析真实 DOM 和字段映射；第一版不直接写入正式消息表。
+全局 worker 单例状态，固定使用 `id = 1`：
 
-## deletion_jobs
+- `id`
+- `worker_id`
+- `lease_expires_at`
+- `current_job_id`
+- `global_request_count`
+- `next_allowed_request_at`
+- `last_request_at`
+- `updated_at`
 
-批量删除任务表。
+它支撑跨账号的全局串行执行和持久化节流。普通请求间隔为 3–8 秒；全局每累计 20 个请求后，到下一请求的间隔使用 30–60 秒长等待并替代普通等待。
 
-- id
-- account_id
-- group_id
-- filter_json
-- preview_count
-- deleted_count
-- delete_attachments
-- status
-- created_by
-- created_at
-- finished_at
+worker 租约过期或进程中断后，不会自动恢复原运行任务；启动检查将其标为 `stopped/process_interrupted`，等待人工续传。
 
-## import_batches
+## 消息与附件
 
-手动导入批次表。用于支持 CSV、JSON 或其他导入方式。
+### messages
 
-- id
-- account_id
-- group_id
-- source_type
-- source_file
-- imported_count
-- skipped_count
-- status
-- created_at
+- `id`
+- `account_id`
+- `group_id`
+- `user_id`
+- `source_message_id`
+- `sent_at`
+- `message_type`
+- `content_text`
+- `normalized_text`
+- `raw_payload`
+- `content_hash`
+- `collection_job_id`
+- `is_red_packet`
+- `is_system_message`
+- `is_deleted`
+- `deleted_at`
+- `created_at`
+- `updated_at`
 
-## search_indexes
+主要索引覆盖账号/群聊/时间、用户、类型、软删除状态、源消息 ID 和内容哈希。优先用 `account_id + group_id + source_message_id` 判重；没有稳定消息 ID 时使用账号、群聊、用户、时间和内容哈希。
 
-可选的搜索索引表。SQLite 起步时可以先用 FTS。
+高置信度红包和粉丝群标识在写入 messages 前被过滤。普通问候和其他未命中高置信度规则的内容正常写入。
 
-- id
-- message_id
-- indexed_text
-- updated_at
+### attachments
+
+- `id`
+- `message_id`
+- `attachment_type`
+- `source_url`
+- `local_path`
+- `file_name`
+- `mime_type`
+- `file_size`
+- `content_hash`
+- `title`
+- `description`
+- `download_status`
+- `downloaded_at`
+- `created_at`
+
+`attachment_type` 可为 `image`、`file`、`link`、`video`、`audio` 或 `unknown`。当前 API 采集主要保存可识别的 URL 和元数据，不能据此声称真实附件字段或附件原件下载已验证。
+
+## 高级工具与观察记录
+
+### import_batches
+
+JSON/CSV 导入批次：
+
+- `id`
+- `account_id`
+- `group_id`
+- `source_type`
+- `source_file`
+- `imported_count`
+- `skipped_count`
+- `status`
+- `created_at`
+
+### browser_page_captures
+
+网页快照：
+
+- `id`
+- `account_id`
+- `group_id`
+- `range_start`
+- `range_end`
+- `page_url`
+- `page_title`
+- `captured_at`
+- `visible_text`
+- `blocks_json`
+- `script_version`
+- `status`
+- `notes`
+- `created_at`
+
+网页快照位于“高级工具 / 数据导入”，可预览后显式导入。由于跨域与浏览器安全策略收紧，它不是 API 主流程。
+
+### weibo_verification_reports
+
+记录账号/群聊的脱敏实机验证结论，不保存 Cookie、Token、Authorization 或密码。
+
+### weibo_interface_observations
+
+保存脱敏后的接口路径、字段结构、分页形状和样例。所有样例必须先移除鉴权信息和用户隐私字段。
+
+## 删除与检索辅助
+
+### deletion_jobs
+
+记录批量删除预览、过滤条件、软删除/附件策略、结果和状态。
+
+### search_indexes
+
+可选的消息检索索引表；当前 schema 保留其基础结构。

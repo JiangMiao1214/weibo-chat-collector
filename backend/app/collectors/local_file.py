@@ -6,13 +6,13 @@ from typing import Any
 
 from ..importer import (
     build_content_hash,
+    classify_import_filter,
     create_import_batch,
     ensure_group_member,
     ensure_user,
     insert_attachments,
     insert_message,
     is_duplicate_message,
-    is_red_packet,
     read_source_file,
 )
 
@@ -29,6 +29,7 @@ class SingleGroupFileCollectionSummary:
     inserted_count: int = 0
     skipped_count: int = 0
     red_packet_count: int = 0
+    filtered_system_notice_count: int = 0
     duplicate_count: int = 0
     attachment_count: int = 0
     out_of_range_count: int = 0
@@ -90,6 +91,8 @@ def finish_collection_job(
             inserted_count = ?,
             skipped_count = ?,
             failed_count = ?,
+            filtered_red_packet_count = ?,
+            filtered_system_notice_count = ?,
             error_message = NULL
         WHERE id = ?
         """,
@@ -98,6 +101,8 @@ def finish_collection_job(
             summary.inserted_count,
             summary.skipped_count,
             summary.invalid_count,
+            summary.red_packet_count,
+            summary.filtered_system_notice_count,
             collection_job_id,
         ),
     )
@@ -199,8 +204,13 @@ def collect_single_group_from_file(
             message["sent_at"] = sent_dt.strftime("%Y-%m-%d %H:%M:%S")
             summary.total_count += 1
 
-            if is_red_packet(message):
+            filter_kind = classify_import_filter(message)
+            if filter_kind == "red_packet":
                 summary.red_packet_count += 1
+                summary.skipped_count += 1
+                continue
+            if filter_kind == "fansgroup_badge":
+                summary.filtered_system_notice_count += 1
                 summary.skipped_count += 1
                 continue
 

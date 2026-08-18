@@ -1,20 +1,22 @@
 import argparse
 import sqlite3
+import sys
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "weibo_chat_collector.sqlite3"
-SCHEMA_PATH = PROJECT_ROOT / "scripts" / "schema.sql"
+BACKEND_DIR = PROJECT_ROOT / "backend"
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+
+from app.database import apply_database_migrations  # noqa: E402
 
 
 def initialize_database(db_path: Path, seed_placeholders: bool) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    schema = SCHEMA_PATH.read_text(encoding="utf-8")
-
     with sqlite3.connect(db_path) as connection:
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.executescript(schema)
+        apply_database_migrations(connection)
 
         if seed_placeholders:
             seed_default_accounts(connection)
@@ -69,4 +71,3 @@ if __name__ == "__main__":
     args = parse_args()
     initialize_database(args.db, args.seed_placeholders)
     print(f"Database initialized at {args.db}")
-

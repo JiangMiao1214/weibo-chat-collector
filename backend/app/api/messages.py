@@ -211,7 +211,7 @@ def get_filter_options(
         row_to_dict(row)
         for row in connection.execute(
             """
-            SELECT id, display_name, is_active
+            SELECT id, display_name, auth_type, login_profile_name, is_active
             FROM weibo_accounts
             ORDER BY id
             """
@@ -225,6 +225,7 @@ def get_filter_options(
                 cg.id,
                 cg.account_id,
                 cg.name,
+                cg.source_group_id,
                 wa.display_name AS account_name,
                 cg.is_active
             FROM chat_groups cg

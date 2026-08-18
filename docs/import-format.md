@@ -1,6 +1,6 @@
 # 手动导入格式
 
-第二步先支持 JSON 和 CSV 手动导入。这个能力用于在微博自动采集适配器完成前，把聊天记录先导入数据库并验证搜索、附件、删除等后续功能。
+JSON 和 CSV 手动导入是保留的高级工具，用于导入既有聊天记录、离线验证搜索/附件/删除，或在微博 API 暂不可用时兜底。当前微博 API 采集器已经实现；文件导入不占 API 全局队列。
 
 ## JSON 格式
 
@@ -62,6 +62,8 @@ account,group,source_message_id,sender_name,source_user_id,sent_at,message_type,
 
 - `message_type` 为 `red_packet`、`hongbao`、`weibo_red_packet`。
 - 消息正文为 `[红包]`、`微博红包`、`发了一个红包`、`领取了红包` 等。
+- `is_redenvelope` / `is_red_packet`、红包图标、最佳手气模板，以及受微博系统 `appid` 约束的金额通知。
+- 粉丝群“今日获得标识”通知也会作为系统噪声过滤；普通“早上好”等问候正常入库。
 
 ## 去重规则
 
@@ -102,4 +104,3 @@ python .\scripts\import_messages.py .\data\imports\sample-import.json --copy-loc
 ```powershell
 python .\scripts\inspect_db.py
 ```
-

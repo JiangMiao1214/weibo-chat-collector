@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
@@ -29,6 +31,12 @@ class CollectionCandidate:
     is_red_packet: bool = False
     is_system_message: bool = False
     attachments: list[AttachmentCandidate] = field(default_factory=list)
+    sender_avatar_url: str | None = None
+
+    @property
+    def avatar_url(self) -> str | None:
+        """Compatibility alias for callers that use the database column name."""
+        return self.sender_avatar_url
 
 
 class TimeRangeCollector(Protocol):
