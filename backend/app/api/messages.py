@@ -8,6 +8,7 @@ from ..database import get_connection
 
 
 router = APIRouter(prefix="/api", tags=["messages"])
+SUPPORTED_MESSAGE_TYPES = ("text", "image", "link", "file", "video", "system")
 
 
 def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -203,6 +204,48 @@ def count_matching_messages(
     )
 
 
+def summarize_matching_attachments(
+    connection: sqlite3.Connection,
+    filters: list[str],
+    params: list[Any],
+) -> dict[str, Any]:
+    where_sql = build_where_sql(filters)
+    totals = connection.execute(
+        f"""
+        SELECT COUNT(att.id) AS total_count, COUNT(DISTINCT m.id) AS message_count
+        FROM messages m
+        JOIN weibo_accounts wa ON wa.id = m.account_id
+        JOIN chat_groups cg ON cg.id = m.group_id
+        JOIN chat_users cu ON cu.id = m.user_id
+        JOIN attachments att ON att.message_id = m.id
+        {where_sql}
+        """,
+        params,
+    ).fetchone()
+    by_type = {
+        str(row["attachment_type"]): int(row["attachment_count"])
+        for row in connection.execute(
+            f"""
+            SELECT att.attachment_type, COUNT(*) AS attachment_count
+            FROM messages m
+            JOIN weibo_accounts wa ON wa.id = m.account_id
+            JOIN chat_groups cg ON cg.id = m.group_id
+            JOIN chat_users cu ON cu.id = m.user_id
+            JOIN attachments att ON att.message_id = m.id
+            {where_sql}
+            GROUP BY att.attachment_type
+            ORDER BY att.attachment_type
+            """,
+            params,
+        )
+    }
+    return {
+        "total_count": int(totals["total_count"]),
+        "message_count": int(totals["message_count"]),
+        "by_type": by_type,
+    }
+
+
 @router.get("/filter-options")
 def get_filter_options(
     connection: sqlite3.Connection = Depends(get_connection),
@@ -244,7 +287,7 @@ def get_filter_options(
             """
         )
     ]
-    message_types = [
+    stored_message_types = [
         row[0]
         for row in connection.execute(
             """
@@ -254,6 +297,9 @@ def get_filter_options(
             """
         )
     ]
+    message_types = list(
+        dict.fromkeys([*SUPPORTED_MESSAGE_TYPES, *stored_message_types])
+    )
 
     return {
         "accounts": accounts,
@@ -298,6 +344,7 @@ def list_messages(
         deleted_only=deleted_only,
     )
     total = count_matching_messages(connection, filters, params)
+    attachment_summary = summarize_matching_attachments(connection, filters, params)
 
     cursor_filters = [*filters]
     cursor_params = [*params]
@@ -358,6 +405,7 @@ def list_messages(
     return {
         "items": items,
         "total": total,
+        "attachment_summary": attachment_summary,
         "limit": limit,
         "offset": 0 if before_sent_at else offset,
         "has_more": has_more,

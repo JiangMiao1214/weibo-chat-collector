@@ -1,0 +1,16 @@
+{
+  "name": "weibo-chat-collector-browser-helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local visible-browser helper for Weibo login and group discovery.",
+  "main": "src/login-session.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "puppeteer": "^24.43.0"
+  }
+}

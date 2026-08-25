@@ -1,29 +1,24 @@
 # 微博 API 采集指南
 
-更新时间：2026-08-12
+更新时间：2026-08-25
 
 ## 1. 方案定位
 
 `weibo-chat-collector` 是主系统，负责多账号、群聊、任务队列、逐页采集、SQLite 落库、监控、检索和删除。
 
-相邻的 `weibo-chat-auto` 只承担两项辅助工作：
-
-1. 打开登录窗口，让每个微博账号扫码并生成自己的 `cookies.json`。
-2. 打开目标群聊，从 `query_messages.json` 请求的查询参数中发现群 `id`。
-
-auto 的归档、查看器、AI 分析结果和数据库不导入 collector；collector 的运行也不依赖 auto AI。
+collector 内置可见浏览器登录助手，完成扫码、Cookie 本机保存、群 ID 候选发现和人工确认绑定。相邻的 `weibo-chat-auto` 不再是主流程依赖；其已有 `cookies.json` 仍可手动导入作为备用，auto 的归档、查看器、AI 分析结果和数据库均不进入 collector。
 
 ```text
-账号扫码 -> cookies.json -> data/auth/account-<id>.cookies.json
-目标群请求 -> query_messages?id=123 -> chat_groups.source_group_id
-                                           |
-用户指定闭区间时间范围 --------------------+
-                                           v
-                    collector 后台全局串行队列
-                                           |
-                         逐页请求、事务提交、断点
-                                           v
-                           SQLite / 消息检索与管理
+collector -> 独立 Chrome 扫码 -> data/auth/account-<id>.cookies.json
+                           \-> query_messages?id=123 候选 -> 用户确认绑定
+                                                             |
+用户指定闭区间时间范围 -------------------------------------+
+                                                             v
+                                      collector 后台全局串行队列
+                                                             |
+                                           逐页请求、事务提交、断点
+                                                             v
+                                             SQLite / 消息检索与管理
 ```
 
 ## 2. 接口性质与使用边界
@@ -41,7 +36,7 @@ https://api.weibo.com/webim/groupchat/query_messages.json
 - 不绕过账号权限或平台风控。
 - 发生未知响应或错误时停止并检查，不能静默丢消息。
 
-当前只有临时 SQLite 与模拟响应层面的自动化验证，尚未声称完成真实微博网络端到端验证，也尚未确认真实附件字段或附件原件下载。
+账号 A 与一个目标群聊已完成一次真实扫码、群 ID 绑定、时间段采集、重复去重和安全停止/断点续传验证；这只证明当前账号、当前群和当前接口版本下的链路可用。账号 B、文件/视频字段、附件原件访问与下载，以及长期稳定性仍未验证。
 
 ## 3. 运行项目
 
@@ -52,6 +47,7 @@ https://api.weibo.com/webim/groupchat/query_messages.json
 ```bash
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r backend/requirements.txt
+npm --prefix browser-helper install
 .venv/bin/python -m uvicorn app.main:app --reload --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
@@ -73,62 +69,59 @@ data/attachments/
 data/imports/
 ```
 
-## 4. 用 auto 准备账号
+## 4. 准备账号和群聊
 
 以下步骤必须对每个微博账号分别执行。
 
-### 4.1 扫码生成 Cookie
+### 4.1 创建 collector 目标
 
-按 auto 自己的说明启动扫码流程，例如从 collector 根目录进入相邻项目：
+在“高级工具 / 数据导入”的“API 采集目标”中：
 
-```bash
-cd ../weibo-chat-auto
-npm run save-cookies
-```
+1. 选择现有账号和群聊，或留空以新建。
+2. 填写账号显示名称和群聊名称；首次发现前群 ID 可留空。
+3. 点击“保存账号与群 ID”。
 
-扫码成功后 auto 生成 `cookies.json`。多账号建议一次处理一个：账号 A 生成后先导入 collector 的账号 A，再为账号 B 扫码并导入账号 B。
+同一账号下不能把两个本地群绑定到同一个 `source_group_id`。已有归档历史的群也不能随意改绑到另一个真实群，避免混库。
 
-`cookies.json` 等同于登录凭据。不要把文件内容、完整请求头、Cookie、Token 或 Authorization 放进聊天、Issue、日志、截图或 Git。
+### 4.2 扫码生成并保存 Cookie
 
-### 4.2 发现群 ID
+回到“采集任务”，选择账号和群聊，点击“扫码登录并发现群 ID”。后端会启动使用独立临时用户目录的可见 Chrome：
 
-在同一账号的登录会话中打开目标群聊，通过 Network 请求查找：
+1. 必须使用页面当前所选账号扫码。
+2. 登录成功后，Cookie 直接通过后端私有进程管道保存到该账号的凭据文件，不会返回 React、公共 API 或应用日志。
+3. 页面显示“Cookie 已就绪”后，在同一 Chrome 窗口中打开目标群聊。
 
-```text
-query_messages.json
-```
+同一时刻只允许一个浏览器会话。采集任务处于 `awaiting_confirmation` 或 `running` 时不能开启扫码。会话默认 10 分钟超时；取消、超时、确认完成、关闭窗口或后端退出时会关闭助手并清理临时用户目录。
 
-只记录查询参数中的 `id`，例如 `id=123456789`。这个值最终写入 `chat_groups.source_group_id`。应针对每个账号和每个目标群实际确认，不能仅凭群名猜测或复制另一账号的绑定。
+### 4.3 发现并确认群 ID
+
+助手只接受路径精确等于 `/webim/groupchat/query_messages.json`、且 `id` 为纯数字的请求作为候选。页面出现候选后：
+
+1. 核对页面显示的 collector 账号和群聊。
+2. 确认当前 Chrome 确实打开了目标群。
+3. 点击“确认绑定”；只有此操作才会写入 `chat_groups.source_group_id`。
+4. 如果打开了错误群，点击“重新发现”，再进入正确群聊。
+
+多账号必须逐个启动新会话，不能复用 Cookie 或浏览器用户目录，也不能仅凭群名复制另一账号的绑定。
 
 ## 5. UI 配置与启动
 
 UI 已按职责拆分。
 
-### 5.1 高级工具 / 数据导入
-
-先在“高级工具 / 数据导入”的“API 采集目标”中：
-
-1. 选择现有账号和群聊，或留空以新建。
-2. 填写账号显示名称、群聊名称和纯数字微博群 ID。
-3. 点击“保存账号与群 ID”。
-
-同一账号下不能把两个本地群绑定到同一个 `source_group_id`。已有归档历史的群也不能随意改绑到另一个真实群，避免混库。
-
-### 5.2 采集任务
+### 5.1 采集任务
 
 “采集任务”只负责配置和创建一次 API 任务：
 
 1. 选择已配置的账号与该账号下的群聊。
-2. 为当前账号选择 auto 生成的 `cookies.json`。
-3. 确认“Cookie 已就绪”和“群 ID 已绑定”。
-4. 选择开始、结束时间。
-5. 点击“启动采集”。
+2. 确认“Cookie 已就绪”和“群 ID 已绑定”；缺任一项时按钮保持禁用。
+3. 选择开始、结束时间。
+4. 点击“启动采集”。
 
 此按钮只调用 `POST /api/collection-jobs/weibo-api` 创建任务。接口返回 `202`，任务进入 `queued`，不会在当前 HTTP 请求里同步采集。
 
 相同账号、群聊和时间范围已有未完成任务（`queued`、`awaiting_confirmation`、`running` 或 `stopped`）时，创建接口返回 `409`；应在监控页处理原任务，而不是复制一个新任务。
 
-### 5.3 采集监控
+### 5.2 采集监控
 
 所有账号共享一个后台队列和一个活动位：
 
@@ -145,9 +138,13 @@ queued -> awaiting_confirmation -> running -> completed
 
 `awaiting_confirmation` 不是自动倒计时。没有人工确认就不会向微博发请求。
 
+### 5.3 手动 Cookie 备用导入
+
+已有可信来源的 Puppeteer `cookies.json` 时，可在“高级工具 / 数据导入”展开“备用：导入已有 Cookie 文件”。该入口只作兼容和排障备用；不要把 Cookie 内容复制到聊天、Issue、日志、截图或 Git。
+
 ## 6. Cookie 存储规则
 
-UI 可读取顶层 Puppeteer Cookie 数组，或包含 `cookies` 数组的对象。后端接口为：
+内置浏览器助手会直接调用同一个后端存储逻辑。备用 UI 也可读取顶层 Puppeteer Cookie 数组，或包含 `cookies` 数组的对象。手动接口为：
 
 ```text
 PUT /api/weibo-api/accounts/{account_id}/cookies
@@ -168,7 +165,7 @@ Content-Type: application/json
 
 `GET /api/weibo-api/status` 只报告文件存在性、可发送的 `SUB`、Cookie 数量和更新时间等非敏感信息。它不能证明微博服务端仍接受该登录态。
 
-Cookie 失效后 collector 不会自动扫码。应回到 auto 重新扫码，为同一个 collector 账号重新导入，再对停止任务执行人工续传。
+Cookie 失效后应回到“采集任务”，为同一个 collector 账号重新启动扫码会话，再对停止任务执行人工续传。
 
 ## 7. 时间范围与分页
 
@@ -321,4 +318,17 @@ JSON/CSV 文件导入和网页快照位于“高级工具 / 数据导入”，�
 - 图片、文件、链接、视频的真实字段和鉴权要求。
 - 安全停止、同任务续传和 attempt/page 记录是否符合预期。
 
-在完成真实且脱敏的验证前，不应声称 API 已稳定可用，也不应声称附件文件字段或附件原件下载已验证。
+### 14.1 已完成记录
+
+- 任务 #5：9 页、看到 180 条、入库 163 条、过滤粉丝群标识 2 条、失败 0 条；消息类型为文本 146、图片 10、链接 7，附件元数据为图片 15、链接 7。
+- 任务 #6：重复采集任务 #5 的相同范围，历史重复 163 条、新增 0 条。
+- 任务 #7：第一次 attempt 在 4 页后安全停止，断点 `5335811483501459`；第二次 attempt 从同一断点开始，继续 30 页后完成，任务 ID 不变且累计失败 0 条。
+
+### 14.2 尚未完成
+
+- 逐条核对图片和链接原地址的访问方式、Cookie 要求和有效期。
+- 验证文件、视频消息字段和附件原件下载。
+- 使用账号 B 独立扫码、绑定和采集，验证账号凭据与数据库记录隔离。
+- 验证取消、超时、关闭浏览器和服务重启后的实机清理。
+
+已完成结果不能外推为接口长期稳定。在附件原件和账号 B 验证完成前，也不能声称全部附件字段或附件下载已验证。

@@ -1,11 +1,12 @@
 # 运行与调试指南
 
-更新时间：2026-08-12
+更新时间：2026-08-25
 
 ## 环境与路径
 
 - Python `>= 3.10`，推荐 Python `3.12`。
 - Node.js `>= 18`。
+- 本机 Chrome、Chromium 或 Edge。自动探测失败时设置 `WEIBO_BROWSER_CHROME_PATH`。
 - 后端固定使用 `127.0.0.1:8000`。
 - 前端 Vite 默认使用 `127.0.0.1:5173`，并将 `/api`、`/health` 代理到 8000。
 - 所有命令都从 `weibo-chat-collector` 项目根目录执行。
@@ -20,6 +21,12 @@ data/auth/
 ```
 
 ## 启动后端
+
+首次安装或 `browser-helper/package-lock.json` 更新后，先安装浏览器助手依赖。配置已禁止 Puppeteer 额外下载浏览器，运行时使用本机浏览器：
+
+```bash
+npm --prefix browser-helper install
+```
 
 macOS / Linux：
 
@@ -36,6 +43,7 @@ Windows PowerShell：
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r .\backend\requirements.txt
+npm --prefix browser-helper install
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --app-dir .\backend --host 127.0.0.1 --port 8000
 ```
 
@@ -87,22 +95,35 @@ WEIBO_API_LONG_REST_EVERY_PAGES=20
 WEIBO_API_LONG_REST_MIN_SECONDS=30
 WEIBO_API_LONG_REST_MAX_SECONDS=60
 WEIBO_API_REQUEST_TIMEOUT_SECONDS=30
+WEIBO_BROWSER_HELPER_PATH=./browser-helper/src/login-session.js
+WEIBO_BROWSER_HELPER_NODE_PATH=node
+WEIBO_BROWSER_CHROME_PATH=
+WEIBO_BROWSER_SESSION_TIMEOUT_SECONDS=600
 ```
 
 普通请求等待 3–8 秒；全局每累计 20 个请求后，到下一请求的间隔使用 30–60 秒并替代普通等待。当前没有重试次数或退避配置，所有微博采集错误均为零自动重试。
 
+浏览器会话超时允许 30–1800 秒，默认 600 秒。助手只由后端启动，使用独立临时用户目录；不要直接把助手 stdout 重定向到日志，因为该私有进程管道会短暂传递 Cookie 给后端保存。
+
 ## UI 联调顺序
 
-### 1. 准备账号和群 ID
+### 1. 创建账号和群聊占位
 
-`weibo-chat-auto` 只用于：
+先在“高级工具 / 数据导入”的“API 采集目标”中创建 collector 账号和属于该账号的群聊。首次绑定时微博群 ID 可以留空。
 
-- 每个账号扫码生成 `cookies.json`。
-- 从对应群的 `query_messages.json?id=...` 发现群 ID。
+### 2. 扫码登录并发现群 ID
 
-collector 不依赖 auto 的归档、查看器或 AI 分析。不要把 Cookie、Token、Authorization、完整请求头或密码放入调试记录。
+回到“采集任务”，选择账号和群聊后点击“扫码登录并发现群 ID”：
 
-### 2. 高级工具 / 数据导入
+1. 后端启动独立可见 Chrome；使用当前选中的微博账号扫码。
+2. 登录成功后 Cookie 直接由后端保存到 `data/auth/account-<id>.cookies.json`，不会返回页面。
+3. 在同一个 Chrome 窗口中打开当前目标群聊。
+4. 页面捕获到候选 ID 后核对账号和群聊，点击“确认绑定”。候选值未经确认不会写入数据库。
+5. 选错群时点击“重新发现”，再打开正确群；要中止则点击“取消”。
+
+同一时刻只允许一个浏览器登录会话。API 采集任务处于 `awaiting_confirmation` 或 `running` 时禁止启动登录会话。不要把 Cookie、Token、Authorization、完整请求头或密码放入调试记录。
+
+### 3. 高级工具 / 数据导入
 
 在“API 采集目标”区域创建或更新：
 
@@ -112,19 +133,20 @@ collector 不依赖 auto 的归档、查看器或 AI 分析。不要把 Cookie�
 
 JSON/CSV 和网页快照也位于该页面。它们是高级/备用导入工具，不占微博 API 队列；网页跨域快照因浏览器安全策略收紧，不作为主采集路径。
 
-### 3. 采集任务
+如果已有可信来源的 Puppeteer `cookies.json`，可展开“备用：导入已有 Cookie 文件”手动导入。该入口仅作兼容备用，不是首次配置的推荐流程。
+
+### 4. 采集任务
 
 在“采集任务”：
 
 1. 选择已配置账号和群聊。
-2. 导入当前账号的 `cookies.json`。
-3. 确认 Cookie、群 ID 就绪。
-4. 填写严格的开始和结束时间。
-5. 创建任务。
+2. 确认 Cookie、群 ID 就绪；缺任一项时“启动采集”保持禁用。
+3. 填写严格的开始和结束时间。
+4. 创建任务。
 
 创建成功只表示任务进入 `queued`，不表示已经访问微博。
 
-### 4. 采集监控
+### 5. 采集监控
 
 监控页应看到：
 
@@ -204,6 +226,44 @@ curl -X POST http://127.0.0.1:8000/api/collection-jobs/1/resume
 
 不要以“按钮点击后必须瞬间变为 stopped”判断运行中停止失败；worker 需要到达安全页边界。
 
+### 2026-08-25 实机验证记录
+
+账号 A、群聊“汉语从句研究会”的任务 #7 已完成运行中安全停止与同任务续传验证：
+
+1. 第一次 attempt 从 `max_mid=0` 启动，成功提交 4 页后执行安全停止。
+2. 第一次 attempt 进入 `stopped/manual_stop`，失败数为 0，停止断点为 `5335811483501459`。
+3. 点击“沿断点续传”后仍使用任务 #7；再次确认启动时 attempt 数从 1 增为 2。
+4. 第二次 attempt 的 `start_max_mid` 为 `5335811483501459`，与第一次 attempt 的 `end_max_mid` 完全一致。
+5. 第二次 attempt 继续完成 30 页；任务累计 34 页、看到 680 条、失败 0 条，最终正常完成。
+
+这次结果证明真实运行中的已提交页、任务 ID、累计计数和游标都能跨人工停止保留。它不替代排队中停止、风险冷却、进程中断等其他分支的自动化测试。
+
+## 附件原件验证（下一步）
+
+先在“消息”页选择账号 A、目标群聊和已验证日期，分别筛选“图片”和“链接”。每类至少抽查 3 条，并记录：
+
+- 消息 ID、发送时间和附件类型。
+- `source_url`、文件名/标题、MIME 类型和当前 `download_status`。
+- 微博页面可见内容是否与数据库记录一致。
+- 原地址是否可直接访问、需要当前账号 Cookie、使用临时签名，或已经失效。
+
+只记录非敏感结论，不要复制 Cookie、Token、Authorization 或完整请求头。验证前不要批量下载；先根据样例确定鉴权和 URL 生命周期，再决定附件下载实现。
+
+当前数据库可直接用于首轮抽查的样例：
+
+| 消息类型 | 消息 ID | 时间 | 附件 ID | 地址主机 | 当前状态 |
+| --- | ---: | --- | ---: | --- | --- |
+| 图片 | 486 | 2026-08-22 11:22:56 | 503 | `upload.api.weibo.com` | `pending`，无本地文件 |
+| 图片 | 493 | 2026-08-22 11:24:28 | 504 | `upload.api.weibo.com` | `pending`，无本地文件 |
+| 图片 | 496 | 2026-08-22 11:27:51 | 505 | `upload.api.weibo.com` | `pending`，无本地文件 |
+| 链接 | 448 | 2026-08-22 16:08:14 | 496 | `weibo.com` | `pending`，无本地文件 |
+| 链接 | 498 | 2026-08-22 11:30:13 | 506 | `t.cn` | `pending`，无本地文件 |
+| 链接 | 500 | 2026-08-22 11:30:57 | 507 | `weibo.com` | `pending`，无本地文件 |
+
+表中只记录主机名，不在文档保存完整 URL。完整地址只在本机消息详情中查看。
+
+抽查完成后进入“微博验证”，选择账号 A 和目标群聊的验证记录，在“添加脱敏观察”中分别新增“图片”和“链接”观察。只填写消息 ID、附件 ID、主机名、能否打开、是否需要登录态和失效情况；路径中的查询参数、Cookie 和完整请求头必须省略。
+
 ## 错误与风险冷却检查
 
 微博采集不自动重试。模拟超时、HTTP/业务错误、无效 JSON、分页异常或数据库错误时应检查：
@@ -231,24 +291,40 @@ curl -X POST http://127.0.0.1:8000/api/collection-jobs/1/resume
 
 ```bash
 .venv/bin/python -m unittest discover -s backend/tests -p 'test_*.py' -v
+npm --prefix browser-helper test
+npm --prefix frontend run typecheck
+npm --prefix frontend run build
 ```
 
 Windows：
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s .\backend\tests -p 'test_*.py' -v
+npm --prefix browser-helper test
+npm --prefix frontend run typecheck
+npm --prefix frontend run build
 ```
 
 这些测试使用临时 SQLite、mock 响应或直接函数调用，不访问真实微博网络，也不覆盖真实附件下载和完整前端浏览器链路。
 
+## 浏览器登录故障排查
+
+- 提示“未找到可用浏览器”：确认已安装 Chrome/Chromium/Edge，或在 `.env` 中填写绝对路径 `WEIBO_BROWSER_CHROME_PATH` 后重启后端。
+- 提示“浏览器助手依赖”或启动失败：重新运行 `npm --prefix browser-helper install`，并确认 `node --version` 不低于 18。
+- 登录后仍显示 Cookie 未就绪：先保持扫码窗口打开，助手会持续等待可用于 `api.weibo.com` 的有效 `SUB`，不要提前关闭窗口；若最终超时，再取消会话并重新扫码。不要上传或粘贴 Cookie 到调试信息。
+- 始终捕获不到群 ID：在助手打开的同一窗口中重新进入目标群聊，点击“重新发现”后再试。
+- 页面提示已有登录会话：回到该会话继续、取消它，或等待默认 10 分钟超时。后端异常退出时会关闭子进程并清理临时用户目录。
+
 ## 真实账号验证边界
 
-首次真实试跑应选很短、可人工核对的范围，并验证时间边界、发送人、正文、分页、重复、两类高置信度过滤和普通问候。图片、文件、链接、视频的字段必须基于脱敏真实响应另行确认。
+账号 A 已完成内置扫码、群 ID 绑定、真实时间段采集、同范围重复去重以及运行中安全停止/断点续传验证。任务 #5 还确认写入了 15 条图片和 7 条链接附件元数据。
+
+仍需验证账号 B 的独立凭据与数据隔离，以及图片/链接原地址、文件、视频和附件原件下载。每次验证仍应选可人工核对的范围，并保留时间边界、发送人、正文、分页、重复和过滤计数。
 
 `query_messages.json` 是内部 Web API，不是官方稳定接口。在实机验证前，不应声称：
 
-- 真实微博 API 已稳定可用。
-- 所有消息类型字段都已确认。
-- 附件文件字段或附件原件下载已验证。
+- 该接口在其他账号、群聊或未来版本仍然稳定可用。
+- 所有消息类型，尤其文件和视频字段，都已确认。
+- 附件原件访问和下载已经验证。
 
 当前 UI 交付以桌面端为主，移动端任务宽表与确认/停止/续传流程的完整验证延后。

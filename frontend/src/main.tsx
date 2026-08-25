@@ -7,6 +7,7 @@ import {
   FileText,
   Image,
   Link,
+  LogIn,
   Plus,
   RefreshCw,
   Save,
@@ -88,6 +89,12 @@ type Attachment = {
   title: string | null;
   description: string | null;
   download_status: string;
+};
+
+type AttachmentSummary = {
+  total_count: number;
+  message_count: number;
+  by_type: Record<string, number>;
 };
 
 type MessageDetail = Message & {
@@ -268,6 +275,33 @@ type BrowserCaptureImportResult = {
   collection_job: CollectionJob;
 };
 
+type BrowserLoginSessionStatus =
+  | "launching_browser"
+  | "awaiting_scan"
+  | "login_detected"
+  | "cookie_saved"
+  | "awaiting_group_selection"
+  | "group_candidate_found"
+  | "binding_confirmed"
+  | "completed"
+  | "cancelled"
+  | "timed_out"
+  | "failed";
+
+type BrowserLoginSession = {
+  session_id: string;
+  account_id: number;
+  group_id: number | null;
+  status: BrowserLoginSessionStatus;
+  created_at: string;
+  expires_at: string;
+  cookie_ready: boolean;
+  candidate_source_group_id: string | null;
+  candidate_captured_at: string | null;
+  error_code: string | null;
+  error_message: string | null;
+};
+
 type VerificationBooleanField =
   | "can_login"
   | "can_view_group"
@@ -355,6 +389,12 @@ const emptyFilters: Filters = {
   dateTo: "",
   messageType: "",
   hasAttachment: "",
+};
+
+const emptyAttachmentSummary: AttachmentSummary = {
+  total_count: 0,
+  message_count: 0,
+  by_type: {},
 };
 
 const emptyCollectionJobForm: CollectionJobForm = {
@@ -480,6 +520,14 @@ async function fetchJson<T>(path: string, label: string, init?: RequestInit): Pr
         try {
           const parsed = JSON.parse(body) as { detail?: unknown };
           if (typeof parsed.detail === "string") detail = parsed.detail.slice(0, 200);
+          else if (
+            typeof parsed.detail === "object" &&
+            parsed.detail !== null &&
+            "message" in parsed.detail &&
+            typeof (parsed.detail as { message?: unknown }).message === "string"
+          ) {
+            detail = (parsed.detail as { message: string }).message.slice(0, 200);
+          }
         } catch {
           // Keep the bounded plain-text body when the response is not JSON.
         }
@@ -598,6 +646,30 @@ function formatCollectionStatus(status: string): string {
   return labels[status] ?? status;
 }
 
+const terminalBrowserSessionStatuses = new Set<BrowserLoginSessionStatus>([
+  "completed",
+  "cancelled",
+  "timed_out",
+  "failed",
+]);
+
+function formatBrowserSessionStatus(status: BrowserLoginSessionStatus): string {
+  const labels: Record<BrowserLoginSessionStatus, string> = {
+    launching_browser: "正在启动浏览器",
+    awaiting_scan: "等待扫码",
+    login_detected: "已检测登录，正在保存 Cookie",
+    cookie_saved: "Cookie 已保存",
+    awaiting_group_selection: "请在浏览器中打开目标群聊",
+    group_candidate_found: "已发现候选群 ID",
+    binding_confirmed: "群 ID 已确认，正在关闭浏览器",
+    completed: "登录与群聊绑定已完成",
+    cancelled: "已取消",
+    timed_out: "会话已超时",
+    failed: "会话失败",
+  };
+  return labels[status];
+}
+
 function parseJsonText(value: string, label: string): unknown {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -640,6 +712,8 @@ function App() {
   const [selectedMessageId, setSelectedMessageId] = useState<number | null>(null);
   const [detail, setDetail] = useState<MessageDetail | null>(null);
   const [total, setTotal] = useState(0);
+  const [attachmentSummary, setAttachmentSummary] =
+    useState<AttachmentSummary>(emptyAttachmentSummary);
   const [nextCursor, setNextCursor] = useState<Cursor | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -656,6 +730,9 @@ function App() {
   );
   const [apiTargetForm, setApiTargetForm] = useState<ApiTargetForm>(emptyApiTargetForm);
   const [cookieFileName, setCookieFileName] = useState("");
+  const [browserLoginSession, setBrowserLoginSession] =
+    useState<BrowserLoginSession | null>(null);
+  const [browserLoginLoading, setBrowserLoginLoading] = useState(false);
   const [collectionJobStatusFilter, setCollectionJobStatusFilter] = useState("");
   const [importFiles, setImportFiles] = useState<ImportFile[]>([]);
   const [browserCaptures, setBrowserCaptures] = useState<BrowserCapture[]>([]);
@@ -702,6 +779,21 @@ function App() {
   const selectedCollectionGroup = useMemo(
     () => options.groups.find((group) => String(group.id) === collectionJobForm.groupId),
     [collectionJobForm.groupId, options.groups],
+  );
+
+  const browserSessionAccount = useMemo(
+    () =>
+      options.accounts.find((account) => account.id === browserLoginSession?.account_id) ?? null,
+    [browserLoginSession?.account_id, options.accounts],
+  );
+
+  const browserSessionGroup = useMemo(
+    () => options.groups.find((group) => group.id === browserLoginSession?.group_id) ?? null,
+    [browserLoginSession?.group_id, options.groups],
+  );
+
+  const browserSessionActive = Boolean(
+    browserLoginSession && !terminalBrowserSessionStatuses.has(browserLoginSession.status),
   );
 
   const visibleVerificationGroups = useMemo(() => {
@@ -758,11 +850,13 @@ function App() {
       const data = (await response.json()) as {
         items: Message[];
         total: number;
+        attachment_summary?: AttachmentSummary;
         has_more: boolean;
         next_cursor: Cursor | null;
       };
       setMessages((current) => (append ? [...current, ...data.items] : data.items));
       setTotal(data.total);
+      setAttachmentSummary(data.attachment_summary ?? emptyAttachmentSummary);
       setHasMore(data.has_more);
       setNextCursor(data.next_cursor);
 
@@ -1181,7 +1275,7 @@ function App() {
           ? (parsed as { cookies: unknown }).cookies
           : null;
       if (!Array.isArray(cookies)) {
-        throw new Error("Cookie 文件必须是 auto 项目生成的 JSON 数组");
+        throw new Error("Cookie 文件必须是 Puppeteer 导出的 JSON 数组");
       }
       const response = await fetch(
         `${API_BASE_URL}/api/weibo-api/accounts/${collectionJobForm.accountId}/cookies`,
@@ -1206,6 +1300,129 @@ function App() {
     }
   }
 
+  async function loadActiveBrowserLoginSession() {
+    const data = await fetchJson<{ session: BrowserLoginSession | null }>(
+      "/api/weibo-api/browser-sessions/active",
+      "浏览器登录会话读取",
+    );
+    setBrowserLoginSession(data.session);
+    if (data.session?.cookie_ready) await loadOptions();
+  }
+
+  async function loadBrowserLoginSession(sessionId: string, quiet = false) {
+    if (!quiet) setBrowserLoginLoading(true);
+    try {
+      const cookieWasReady = browserLoginSession?.cookie_ready ?? false;
+      const session = await fetchJson<BrowserLoginSession>(
+        `/api/weibo-api/browser-sessions/${sessionId}`,
+        "浏览器登录状态读取",
+      );
+      setBrowserLoginSession(session);
+      if (session.cookie_ready && !cookieWasReady) await loadOptions();
+      if (session.error_message && terminalBrowserSessionStatuses.has(session.status)) {
+        setError(session.error_message);
+      }
+      return session;
+    } finally {
+      if (!quiet) setBrowserLoginLoading(false);
+    }
+  }
+
+  async function startBrowserLoginSession() {
+    setBrowserLoginLoading(true);
+    setJobMessage(null);
+    setError(null);
+    try {
+      if (!collectionJobForm.accountId) throw new Error("请先选择账号");
+      const session = await fetchJson<BrowserLoginSession>(
+        "/api/weibo-api/browser-sessions",
+        "扫码登录启动",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            account_id: Number(collectionJobForm.accountId),
+            group_id: collectionJobForm.groupId ? Number(collectionJobForm.groupId) : null,
+          }),
+        },
+      );
+      setBrowserLoginSession(session);
+      setJobMessage("扫码窗口正在打开；请使用当前所选微博账号扫码");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "扫码登录启动失败");
+    } finally {
+      setBrowserLoginLoading(false);
+    }
+  }
+
+  async function cancelBrowserLoginSession() {
+    if (!browserLoginSession) return;
+    setBrowserLoginLoading(true);
+    setError(null);
+    try {
+      const session = await fetchJson<BrowserLoginSession>(
+        `/api/weibo-api/browser-sessions/${browserLoginSession.session_id}/cancel`,
+        "浏览器登录取消",
+        { method: "POST" },
+      );
+      setBrowserLoginSession(session);
+      setJobMessage("浏览器登录会话已取消；已保存的有效 Cookie 会继续保留");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "取消失败");
+    } finally {
+      setBrowserLoginLoading(false);
+    }
+  }
+
+  async function rediscoverBrowserGroup() {
+    if (!browserLoginSession) return;
+    setBrowserLoginLoading(true);
+    setError(null);
+    try {
+      const session = await fetchJson<BrowserLoginSession>(
+        `/api/weibo-api/browser-sessions/${browserLoginSession.session_id}/rediscover`,
+        "群 ID 重新发现",
+        { method: "POST" },
+      );
+      setBrowserLoginSession(session);
+      setJobMessage("请在扫码窗口中重新打开当前目标群聊");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "重新发现失败");
+    } finally {
+      setBrowserLoginLoading(false);
+    }
+  }
+
+  async function confirmBrowserGroup() {
+    if (!browserLoginSession?.candidate_source_group_id || !browserSessionGroup) return;
+    const confirmed = window.confirm(
+      `确认把候选群 ID ${browserLoginSession.candidate_source_group_id} 绑定到“${browserSessionGroup.name}”？`,
+    );
+    if (!confirmed) return;
+    setBrowserLoginLoading(true);
+    setError(null);
+    try {
+      const session = await fetchJson<BrowserLoginSession>(
+        `/api/weibo-api/browser-sessions/${browserLoginSession.session_id}/confirm-group`,
+        "群 ID 绑定",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            candidate_source_group_id: browserLoginSession.candidate_source_group_id,
+          }),
+        },
+      );
+      setBrowserLoginSession(session);
+      await loadOptions();
+      setJobMessage(`群 ID 已绑定到“${browserSessionGroup.name}”`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "群 ID 绑定失败");
+    } finally {
+      setBrowserLoginLoading(false);
+    }
+  }
+
   async function createWeiboApiJob() {
     setJobLoading(true);
     setJobMessage(null);
@@ -1218,6 +1435,12 @@ function App() {
         !collectionJobForm.rangeEnd
       ) {
         throw new Error("请先选择账号、群聊、开始时间和结束时间");
+      }
+      if (!selectedCollectionAccount?.cookie_profile?.authenticated) {
+        throw new Error("当前账号 Cookie 未就绪，请先扫码登录或使用备用文件导入");
+      }
+      if (!selectedCollectionGroup?.source_group_id) {
+        throw new Error("当前群聊尚未绑定群 ID，请先完成浏览器发现并确认绑定");
       }
       const response = await fetch(`${API_BASE_URL}/api/collection-jobs/weibo-api`, {
         method: "POST",
@@ -1557,12 +1780,20 @@ function App() {
 
   async function loadJobView() {
     setError(null);
-    await Promise.all([loadOptions(), loadCollectionJobs()]);
+    await Promise.all([loadOptions(), loadCollectionJobs(), loadActiveBrowserLoginSession()]);
   }
 
   async function loadAdvancedToolsView() {
     setError(null);
     await Promise.all([loadOptions(), loadImportFiles(), loadBrowserCaptures()]);
+  }
+
+  async function loadMessageView(nextViewMode: ViewMode = viewMode) {
+    setError(null);
+    await Promise.all([
+      loadOptions(),
+      loadMessages(appliedFilters, "replace", null, nextViewMode),
+    ]);
   }
 
   useEffect(() => {
@@ -1597,6 +1828,19 @@ function App() {
     }, 5000);
     return () => window.clearInterval(timer);
   }, [viewMode, collectionJobStatusFilter, collectionJobOffset, expandedJobId]);
+
+  useEffect(() => {
+    if (!browserLoginSession || terminalBrowserSessionStatuses.has(browserLoginSession.status)) {
+      return undefined;
+    }
+    const sessionId = browserLoginSession.session_id;
+    const timer = window.setInterval(() => {
+      void loadBrowserLoginSession(sessionId, true).catch((requestError) => {
+        setError(requestError instanceof Error ? requestError.message : "浏览器登录状态读取失败");
+      });
+    }, 1500);
+    return () => window.clearInterval(timer);
+  }, [browserLoginSession?.session_id, browserLoginSession?.status]);
 
   function updateFilter<K extends keyof Filters>(key: K, value: Filters[K]) {
     setFilters((current) => {
@@ -1651,7 +1895,9 @@ function App() {
     } else if (nextViewMode === "weibo") {
       void loadVerificationReports();
     } else {
-      void loadMessages(appliedFilters, "replace", null, nextViewMode);
+      void loadMessageView(nextViewMode).catch((requestError) => {
+        setError(requestError instanceof Error ? requestError.message : "请求失败");
+      });
     }
   }
 
@@ -1729,7 +1975,9 @@ function App() {
                   ? void loadAdvancedToolsView()
                 : viewMode === "weibo"
                   ? void loadVerificationReports()
-                  : void loadMessages()
+                  : void loadMessageView().catch((requestError) => {
+                      setError(requestError instanceof Error ? requestError.message : "请求失败");
+                    })
             }
           >
             <RefreshCw size={17} aria-hidden="true" />
@@ -1856,18 +2104,97 @@ function App() {
               </select>
             </label>
 
-            <label>
-              <span>账号 Cookie 文件</span>
-              <input
-                type="file"
-                accept="application/json,.json"
-                onChange={(event) => {
-                  void importAccountCookies(event.target.files?.[0]);
-                  event.currentTarget.value = "";
-                }}
-                disabled={jobLoading || !collectionJobForm.accountId}
-              />
-            </label>
+            <section className="browser-login-card">
+              <div className="browser-login-heading">
+                <div>
+                  <h3>账号登录与群聊绑定</h3>
+                  <p>打开独立 Chrome 窗口扫码，并自动发现目标群聊 ID。</p>
+                </div>
+                <ShieldCheck size={20} aria-hidden="true" />
+              </div>
+
+              {browserLoginSession ? (
+                <div className="browser-login-status">
+                  <strong>{formatBrowserSessionStatus(browserLoginSession.status)}</strong>
+                  <span>
+                    会话账号：{browserSessionAccount?.display_name ?? `#${browserLoginSession.account_id}`}
+                  </span>
+                  <span>
+                    目标群聊：{browserSessionGroup?.name ?? "启动时未选择群聊"}
+                  </span>
+                  {browserLoginSession.candidate_source_group_id ? (
+                    <div className="group-candidate">
+                      <span>候选群 ID</span>
+                      <strong>{browserLoginSession.candidate_source_group_id}</strong>
+                      <small>
+                        {browserLoginSession.candidate_captured_at
+                          ? `发现时间：${browserLoginSession.candidate_captured_at}`
+                          : "等待确认"}
+                      </small>
+                    </div>
+                  ) : null}
+                  {browserLoginSession.error_message ? (
+                    <p className="browser-login-error">{browserLoginSession.error_message}</p>
+                  ) : null}
+                </div>
+              ) : (
+                <p className="browser-login-idle">
+                  扫码必须使用当前所选账号；登录后请在同一窗口打开当前目标群聊。
+                </p>
+              )}
+
+              <div className="browser-login-actions">
+                {!browserSessionActive ? (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={startBrowserLoginSession}
+                    disabled={browserLoginLoading || !collectionJobForm.accountId}
+                  >
+                    <LogIn size={16} aria-hidden="true" />
+                    扫码登录并发现群 ID
+                  </button>
+                ) : null}
+                {browserLoginSession?.status === "group_candidate_found" ? (
+                  <button
+                    className="icon-button"
+                    type="button"
+                    onClick={confirmBrowserGroup}
+                    disabled={browserLoginLoading || !browserSessionGroup}
+                  >
+                    确认绑定
+                  </button>
+                ) : null}
+                {browserSessionActive &&
+                browserLoginSession?.cookie_ready &&
+                browserLoginSession.status !== "binding_confirmed" ? (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={rediscoverBrowserGroup}
+                    disabled={browserLoginLoading}
+                  >
+                    <RefreshCw size={16} aria-hidden="true" />
+                    重新发现
+                  </button>
+                ) : null}
+                {browserSessionActive && browserLoginSession?.status !== "binding_confirmed" ? (
+                  <button
+                    className="danger-outline-button compact-browser-button"
+                    type="button"
+                    onClick={cancelBrowserLoginSession}
+                    disabled={browserLoginLoading}
+                  >
+                    取消并关闭浏览器
+                  </button>
+                ) : null}
+              </div>
+
+              <p className="browser-login-privacy">
+                Cookie 只由后端保存到本机，不会返回页面。候选群 ID 只有点击“确认绑定”后才会写入数据库。
+                扫码和发现期间请勿同时操作微博 App 或其他微博网页。
+              </p>
+            </section>
 
             <div className="api-readiness form-readiness">
               <span
@@ -1881,8 +2208,6 @@ function App() {
                 群 ID {selectedCollectionGroup?.source_group_id ? "已绑定" : "未绑定"}
               </span>
             </div>
-
-            {cookieFileName ? <p className="form-hint">最近导入：{cookieFileName}</p> : null}
 
             <label>
               <span>开始时间</span>
@@ -1916,7 +2241,11 @@ function App() {
               className="icon-button full-width-button"
               type="button"
               onClick={createWeiboApiJob}
-              disabled={jobLoading}
+              disabled={
+                jobLoading ||
+                !selectedCollectionAccount?.cookie_profile?.authenticated ||
+                !selectedCollectionGroup?.source_group_id
+              }
             >
               <Plus size={16} aria-hidden="true" />
               {jobLoading ? "正在创建…" : "启动采集"}
@@ -1925,6 +2254,11 @@ function App() {
             <p className="form-hint">
               Cookie 仅保存在本机并按账号隔离。
               任务创建后先进入全局队列，不会在当前请求里同步采集。
+              {!selectedCollectionAccount?.cookie_profile?.authenticated
+                ? " 当前账号 Cookie 未就绪。"
+                : !selectedCollectionGroup?.source_group_id
+                  ? " 当前群聊 ID 未绑定。"
+                  : ""}
             </p>
           </aside>
 
@@ -2302,6 +2636,25 @@ function App() {
               <Save size={16} aria-hidden="true" />
               保存账号与群 ID
             </button>
+            <details className="legacy-tools">
+              <summary>备用：导入已有 Cookie 文件</summary>
+              <label>
+                <span>当前账号 Cookie 文件</span>
+                <input
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={(event) => {
+                    void importAccountCookies(event.target.files?.[0]);
+                    event.currentTarget.value = "";
+                  }}
+                  disabled={jobLoading || !collectionJobForm.accountId}
+                />
+              </label>
+              {cookieFileName ? <p className="form-hint">最近导入：{cookieFileName}</p> : null}
+              <p className="form-hint">
+                仅在内置浏览器助手不可用时使用；文件仍由同一后端安全规则校验和保存。
+              </p>
+            </details>
           </aside>
 
           <section className="job-form-panel">
@@ -3165,6 +3518,14 @@ function App() {
           <div className="panel-title">
             <h2>{viewMode === "deleted" ? "回收站" : "消息列表"}</h2>
             <span>{loading ? "加载中" : `${messages.length} / ${total}`}</span>
+          </div>
+
+          <div className="attachment-summary" aria-label="当前筛选结果附件统计">
+            <span>含附件消息 {attachmentSummary.message_count}</span>
+            <strong>附件总数 {attachmentSummary.total_count}</strong>
+            {Object.entries(attachmentSummary.by_type).map(([type, count]) => (
+              <span key={type}>{formatMessageType(type)} {count}</span>
+            ))}
           </div>
 
           <div className="message-list">

@@ -6,19 +6,17 @@
 
 `weibo-chat-collector` 是主项目，负责账号与群聊配置、采集队列、严格时间范围过滤、逐页落库、断点续传、监控、检索和删除。
 
-相邻的 `weibo-chat-auto` 只提供两项初始化辅助：
+collector 已内置可见浏览器登录助手：前端发起一次本机会话，后端启动独立 Chrome 用户目录；用户扫码后 Cookie 直接保存到对应账号的本地凭据文件，随后在同一窗口打开目标群聊，collector 从精确匹配的 `query_messages.json?id=...` 请求中发现候选群 ID，并等待用户确认绑定。
 
-1. 每个账号扫码登录后生成 `cookies.json`。
-2. 打开目标群聊并从 `query_messages.json` 请求中发现群 `id`。
-
-auto 的归档、查看器和 AI 分析均不属于 collector 的采集链路，collector 运行时也不依赖 auto 的 AI 能力或数据库。
+相邻的 `weibo-chat-auto` 不再是主流程依赖。它生成的 `cookies.json` 仍可通过“高级工具 / 数据导入”手动导入，作为兼容和故障排查备用；auto 的归档、查看器、AI 分析和数据库均不进入 collector。
 
 ```text
-auto 扫码 -> cookies.json ---------------------+
-                                                |
-query_messages 请求 -> 群 id ------------------+-> collector 全局队列
-                                                    -> 逐页调用 API
-                                                    -> SQLite
+collector -> 独立 Chrome 扫码 -> 后端保存账号 Cookie
+                           \-> 捕获候选群 ID -> 用户确认绑定
+                                                     |
+用户选择时间范围 -----------------------------------+-> collector 全局队列
+                                                         -> 逐页调用 API
+                                                         -> SQLite
 ```
 
 collector 调用的是观察自微博 Web 客户端的内部接口，不是公开、受支持或保证稳定的官方 API：
@@ -55,6 +53,7 @@ queued -> awaiting_confirmation -> running -> completed
 ## Cookie 与群 ID 安全
 
 - 每个账号的 Cookie 独立保存为 `data/auth/account-<id>.cookies.json`。
+- 扫码会话使用临时、隔离的浏览器用户目录；取消、超时、确认完成或后端退出后都会关闭助手并清理该目录。
 - Cookie 内容不写入数据库，也不由任何状态或采集 API 返回；数据库只保存不敏感的配置文件名。
 - POSIX 系统把 Cookie 目录/文件权限收紧为 `0700`/`0600`；Windows 继承当前项目目录 ACL，应确保其他本机用户无权读取。
 - `data/auth/` 不进入 Git。不要把 Cookie、Token、Authorization、账号密码或完整请求头提交到 Git、聊天、Issue、日志或截图。
@@ -65,6 +64,7 @@ queued -> awaiting_confirmation -> running -> completed
 
 - Python `>= 3.10`，推荐 Python `3.12`。
 - Node.js `>= 18`。
+- 本机安装 Chrome、Chromium 或 Edge；也可用 `WEIBO_BROWSER_CHROME_PATH` 指定可执行文件。
 - 所有命令从本项目根目录执行。数据库、附件、导入和鉴权路径都相对项目根解析。
 
 终端一启动后端，固定使用 8000 端口：
@@ -72,6 +72,7 @@ queued -> awaiting_confirmation -> running -> completed
 ```bash
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r backend/requirements.txt
+npm --prefix browser-helper install
 .venv/bin/python -m uvicorn app.main:app --reload --app-dir backend --host 127.0.0.1 --port 8000
 ```
 
@@ -93,26 +94,28 @@ npm --prefix frontend run dev
 
 首次配置：
 
-1. 在 auto 中为账号扫码，取得该账号的 `cookies.json`。
-2. 用同一账号打开目标群聊，记录 `query_messages.json` 查询参数中的 `id`。
-3. 在 collector 的“高级工具 / 数据导入”中创建或更新账号、群聊和群 ID 绑定。
+1. 在“高级工具 / 数据导入”中创建账号和属于该账号的群聊；群 ID 可暂时留空。
+2. 回到“采集任务”，选择账号和群聊，点击“扫码登录并发现群 ID”。
+3. 在新开的独立 Chrome 中用所选账号扫码；登录后在同一窗口打开目标群聊。
+4. 页面出现候选群 ID 后，核对当前账号和群聊，再点击“确认绑定”。只有确认后才会写入数据库。
 
 开始采集：
 
 1. 在“采集任务”中选择已配置的账号和群聊。
-2. 为当前账号导入对应的 `cookies.json`，确认 Cookie 和群 ID 都已就绪。
+2. 确认“Cookie 已就绪”和“群 ID 已绑定”；缺任一项时不能创建任务。
 3. 选择开始、结束时间并创建任务。任务先进入 `queued`。
 4. 在“采集监控”查看队列位置、状态、attempt 次数、页数、当前最早消息时间、`next_max_mid`、计数和停止原因。
 5. 任务进入 `awaiting_confirmation` 后，关闭微博 App 和所有微博网页，再点击“确认并启动”。
 6. 已停止任务按提示处理后点击“沿断点续传”；风险冷却任务需先等待 60 分钟。
 
-第二个账号必须重新扫码并导入自己的 Cookie，不能复用第一个账号的文件。
+第二个账号必须启动新的扫码会话，不能复用第一个账号的 Cookie。浏览器登录会话与正在运行/待确认的 API 采集任务互斥；开始扫码前应先停止或完成该任务。
 
 ## 高级工具与备用导入
 
 “高级工具 / 数据导入”集中放置：
 
 - API 采集目标配置。
+- 已有 `cookies.json` 的手动 Cookie 备用导入。
 - `data/imports/` 下的 JSON/CSV 文件导入。
 - 网页快照生成、预览和显式导入。
 
@@ -122,12 +125,18 @@ JSON/CSV 和网页快照不占微博 API 队列。文件导入继续保留；网
 
 ## 验证边界
 
-本地自动化测试使用临时 SQLite 和模拟响应验证核心实现，但不代表已经完成真实微博网络端到端验证。当前不能声称：
+截至 2026-08-25，账号 A 与“汉语从句研究会”已经完成内置扫码、Cookie 保存、群 ID 确认绑定、真实时间段采集、同范围重复去重以及运行中安全停止/断点续传验证：
 
-- 内部 API 已在真实微博账号上稳定可用。
-- 所有账号、群聊和消息类型都符合当前字段映射。
-- 图片、文件、链接、视频等附件字段已经实机确认。
-- 附件原件已经成功下载；当前主要记录可识别的 URL 和元数据。
+- 任务 #5 完成 9 页，看到 180 条、入库 163 条、失败 0 条；包含文本 146、图片消息 10、链接消息 7，以及图片附件元数据 15 条、链接附件元数据 7 条。
+- 任务 #6 重复相同范围，识别历史重复 163 条、新增 0 条。
+- 任务 #7 第一次运行在 4 页后安全停止，第二次运行从完全相同的 `next_max_mid` 续传并完成，累计 34 页、失败 0 条。
+
+这些结果只证明当前账号、当前群聊和当前接口版本下的链路可用。当前仍不能声称：
+
+- 内部 API 对其他账号、群聊或未来版本长期稳定。
+- 账号 B 已完成独立 Cookie、群 ID 和数据隔离验证。
+- 文件、视频等所有消息类型都符合当前字段映射。
+- 图片、链接或其他附件原件已经成功访问或下载；当前验证到的是可识别 URL、元数据和统计。
 
 ## 文档
 
@@ -145,6 +154,7 @@ JSON/CSV 和网页快照不占微博 API 队列。文件导入继续保留；网
 ```text
 weibo-chat-collector/
   backend/              # FastAPI、后台采集 worker 和入库服务
+  browser-helper/       # Puppeteer 可见浏览器登录与群 ID 发现助手
   frontend/             # React + Vite
   data/
     auth/               # 按账号隔离的 Cookie，仅本机保存且不进 Git

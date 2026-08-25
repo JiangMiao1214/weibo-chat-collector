@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api.browser_captures import router as browser_captures_router
+from .api.browser_login import router as browser_login_router
 from .api.collection_jobs import router as collection_jobs_router
 from .api.messages import router as messages_router
 from .api.single_group_collection import router as single_group_collection_router
@@ -11,6 +12,7 @@ from .api.weibo_api import router as weibo_api_router
 from .api.weibo_verifications import router as weibo_verifications_router
 from .database import initialize_database
 from .services.collection_worker import get_collection_worker
+from .services.browser_login_manager import get_browser_login_manager
 from .settings import get_settings
 
 
@@ -22,6 +24,7 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        get_browser_login_manager().shutdown()
         worker.stop()
 
 
@@ -40,6 +43,7 @@ app.add_middleware(
 
 
 app.include_router(browser_captures_router)
+app.include_router(browser_login_router)
 app.include_router(messages_router)
 app.include_router(collection_jobs_router)
 app.include_router(single_group_collection_router)

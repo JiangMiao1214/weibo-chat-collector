@@ -25,6 +25,12 @@ class Settings(BaseSettings):
     weibo_api_long_rest_min_seconds: float = 30.0
     weibo_api_long_rest_max_seconds: float = 60.0
     weibo_api_request_timeout_seconds: float = 30.0
+    weibo_browser_helper_path: Path = (
+        PROJECT_ROOT / "browser-helper" / "src" / "login-session.js"
+    )
+    weibo_browser_helper_node_path: str = "node"
+    weibo_browser_chrome_path: str = ""
+    weibo_browser_session_timeout_seconds: int = 600
     # Accepted only so databases with the former .env template keep starting.
     # These values are intentionally unused: all errors now stop immediately.
     weibo_api_page_delay_seconds: float | None = None
@@ -42,6 +48,7 @@ class Settings(BaseSettings):
         "attachments_dir",
         "imports_dir",
         "weibo_api_auth_dir",
+        "weibo_browser_helper_path",
         mode="after",
     )
     @classmethod
@@ -56,6 +63,8 @@ class Settings(BaseSettings):
             raise ValueError("Weibo API page size and page limit must be positive")
         if self.weibo_api_request_timeout_seconds <= 0:
             raise ValueError("Weibo API request timeout must be positive")
+        if not 30 <= self.weibo_browser_session_timeout_seconds <= 1800:
+            raise ValueError("Weibo browser session timeout must be between 30 and 1800 seconds")
         if self.weibo_api_long_rest_every_pages < 1:
             raise ValueError("Weibo API long-rest page interval must be positive")
         delay_ranges = (
