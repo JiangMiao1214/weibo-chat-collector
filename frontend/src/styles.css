@@ -1302,3 +1302,13 @@ button:disabled {
     flex-direction: column;
   }
 }
+
+.collection-date-time { display: grid; gap: 6px; }
+.collection-date-time-fields { display: grid; grid-template-columns: minmax(0, 1fr) 80px 80px; gap: 6px; }
+.collection-date-time-fields > * { min-width: 0; }
+
+.collection-time-select { position: relative; }
+.collection-time-select > button { width: 100%; height: 100%; padding: 8px 4px; color: #172b35; background: white; border: 1px solid #cbd5df; border-radius: 6px; }
+.collection-time-select > select.time-options { position: absolute; top: calc(100% + 4px); left: 0; width: 100%; height: 338px; padding: 0; z-index: 20; background: white; overflow-y: auto; box-shadow: 0 4px 14px #0002; }
+.collection-time-select > select.time-options.above { top: auto; bottom: calc(100% + 4px); }
+.collection-time-select .time-options option { height: 28px; padding: 4px 8px; box-sizing: border-box; }

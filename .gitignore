@@ -11,5 +11,14 @@ build/
 node_modules/
 data/auth/
 .DS_Store
+.tdd-results/
+coverage/
+frontend/test-results/
 Thumbs.db
 .codex/skills/
+
+# Local archive originals, derivatives and backup copies
+data/attachments/archives/
+data/attachments/thumbnails/
+data/backups/
+data/restored/

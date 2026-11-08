@@ -1,4 +1,3 @@
-import csv
 import hashlib
 import json
 import shutil
@@ -9,7 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .services.message_references import save_import_reference
+from .services.import_formats import read_csv_file, parse_attachments_json
 from .services.message_filter import MessageFilterKind, classify_message_filter
+from .services.group_policy import require_group_slot
 
 
 @dataclass
@@ -53,6 +55,7 @@ def import_file(
 
     with sqlite3.connect(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute('BEGIN IMMEDIATE')
         account_id = ensure_account(connection, account)
         group_id = ensure_group(connection, account_id, group)
         import_batch_id = create_import_batch(connection, account_id, group_id, source_path)
@@ -137,42 +140,6 @@ def read_json_file(source_path: Path) -> dict[str, Any]:
     return data
 
 
-def read_csv_file(source_path: Path) -> dict[str, Any]:
-    messages: list[dict[str, Any]] = []
-    account = None
-    group = None
-
-    with source_path.open("r", encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle)
-        for row in reader:
-            account = account or row.get("account")
-            group = group or row.get("group")
-            attachments = parse_attachments_json(row.get("attachments_json"))
-            messages.append(
-                {
-                    "source_message_id": row.get("source_message_id") or None,
-                    "sender_name": row.get("sender_name") or row.get("user_name"),
-                    "source_user_id": row.get("source_user_id") or None,
-                    "sent_at": row.get("sent_at"),
-                    "message_type": row.get("message_type") or "text",
-                    "content_text": row.get("content_text") or "",
-                    "attachments": attachments,
-                    "raw_payload": row,
-                }
-            )
-
-    return {"account": account, "group": group, "messages": messages}
-
-
-def parse_attachments_json(value: str | None) -> list[dict[str, Any]]:
-    if not value:
-        return []
-    parsed = json.loads(value)
-    if not isinstance(parsed, list):
-        raise ValueError("attachments_json must be a JSON array.")
-    return parsed
-
-
 def ensure_account(connection: sqlite3.Connection, display_name: str) -> int:
     row = connection.execute(
         "SELECT id FROM weibo_accounts WHERE display_name = ?",
@@ -188,12 +155,15 @@ def ensure_account(connection: sqlite3.Connection, display_name: str) -> int:
 
 
 def ensure_group(connection: sqlite3.Connection, account_id: int, name: str) -> int:
+    if not connection.in_transaction:
+        connection.execute('BEGIN IMMEDIATE')
     row = connection.execute(
         "SELECT id FROM chat_groups WHERE account_id = ? AND name = ?",
         (account_id, name),
     ).fetchone()
     if row:
         return int(row[0])
+    require_group_slot(connection, account_id)
     cursor = connection.execute(
         "INSERT INTO chat_groups (account_id, name) VALUES (?, ?)",
         (account_id, name),
@@ -202,7 +172,7 @@ def ensure_group(connection: sqlite3.Connection, account_id: int, name: str) -> 
 
 
 def ensure_user(connection: sqlite3.Connection, message: dict[str, Any]) -> int:
-    source_user_id = message.get("source_user_id")
+    source_user_id = message.get("source_user_id") or None
     display_name = message.get("sender_name") or "unknown_user"
     avatar_url = message.get("avatar_url")
 
@@ -239,12 +209,14 @@ def ensure_user(connection: sqlite3.Connection, message: dict[str, Any]) -> int:
                 )
             return int(row[0])
 
-    row = connection.execute(
-        "SELECT id FROM chat_users WHERE display_name = ? AND source_user_id IS NULL",
-        (display_name,),
-    ).fetchone()
-    if row:
-        return int(row[0])
+    else:
+        # A nickname alone is not evidence that a known UID owns anonymous history.
+        row = connection.execute(
+            "SELECT id FROM chat_users WHERE display_name = ? AND source_user_id IS NULL",
+            (display_name,),
+        ).fetchone()
+        if row:
+            return int(row[0])
 
     cursor = connection.execute(
         "INSERT INTO chat_users (display_name, source_user_id, avatar_url) VALUES (?, ?, ?)",
@@ -521,7 +493,9 @@ def insert_message(
             else 0,
         ),
     )
-    return int(cursor.lastrowid)
+    message_id = int(cursor.lastrowid)
+    save_import_reference(connection, message_id, message)
+    return message_id
 
 
 def insert_attachments(

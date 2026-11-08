@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
 
 from ..database import get_connection
+from ..services.target_lifecycle import lifecycle_guard
 from ..services.browser_login_manager import (
     BrowserLoginSession,
     BrowserSessionBusyError,
@@ -98,7 +99,7 @@ def ensure_collection_is_idle(connection: sqlite3.Connection) -> None:
         )
 
 
-@router.post("", status_code=202)
+@router.post("", status_code=202, dependencies=[Depends(lifecycle_guard)])
 def start_browser_session(
     payload: StartBrowserSessionRequest,
     request: Request,

@@ -7,6 +7,9 @@ from pydantic import BaseModel
 
 from ..collectors.weibo_api import CookieProfileError, CookieProfileStore
 from ..database import get_connection
+from ..services.collection_limits import validate_recovery_start
+from ..services.collection_time import parse_datetime, normalize_datetime
+from ..services.target_management import require_enabled
 from ..services.collection_worker import get_collection_worker, parse_utc_text
 from ..settings import get_settings
 
@@ -40,21 +43,6 @@ class UpdateCollectionJobStatusRequest(BaseModel):
 
 def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return {key: row[key] for key in row.keys()}
-
-
-def parse_datetime(value: str, field_name: str) -> datetime:
-    normalized = value.replace("T", " ")
-    try:
-        return datetime.fromisoformat(normalized)
-    except ValueError as error:
-        raise HTTPException(
-            status_code=400,
-            detail=f"{field_name} must be an ISO-like datetime string.",
-        ) from error
-
-
-def normalize_datetime(value: str, field_name: str) -> str:
-    return parse_datetime(value, field_name).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def ensure_account_and_group(
@@ -309,6 +297,8 @@ def confirm_collection_job(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
     connection.execute("BEGIN IMMEDIATE")
+    require_enabled(connection, job["account_id"], job["group_id"])
+    validate_recovery_start(connection,job)
     other_running = connection.execute(
         """
         SELECT id FROM collection_jobs
@@ -365,6 +355,9 @@ def resume_collection_job(
     job = get_collection_job(job_id, connection)
     if job["collector_type"] != "weibo_api_v2" or job["status"] != "stopped":
         raise HTTPException(status_code=409, detail="Only a stopped API task can be resumed.")
+    connection.execute("BEGIN IMMEDIATE")
+    require_enabled(connection, job["account_id"], job["group_id"])
+    validate_recovery_start(connection,job)
     resume_not_before = parse_utc_text(job.get("resume_not_before"))
     if resume_not_before and resume_not_before > datetime.now(timezone.utc):
         raise HTTPException(

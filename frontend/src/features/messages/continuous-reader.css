@@ -1,0 +1,41 @@
+.continuous-reader .context-rows {
+  max-height: 52vh;
+  overflow-y: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.continuous-reader .context-rows::-webkit-scrollbar { width: 10px; }
+.continuous-reader .context-rows::-webkit-scrollbar-track { background: #f2f6f7; }
+.continuous-reader .context-rows::-webkit-scrollbar-thumb {
+  background: #8da5aa; border: 2px solid #f2f6f7; border-radius: 8px;
+}
+@supports not selector(::-webkit-scrollbar) {
+  .continuous-reader .context-rows { scrollbar-color: #8da5aa #f2f6f7; }
+}
+.continuous-reader [hidden] { display: none; }
+.continuous-reader .context-rows:focus-visible { outline: 2px solid #20756f; outline-offset: -2px; }
+
+/* Carry the sidebar's bounded height through every mounted quote frame.
+   Only the active frame's message list grows and scrolls. */
+.compact-reader .reader-context { overflow: hidden; }
+.compact-reader .reader-context > :not(.continuous-reader) { flex-shrink: 0; }
+.compact-reader .reader-context .continuous-reader,
+.compact-reader .continuous-reader .context-frame:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.compact-reader .continuous-reader > :not(.context-frame),
+.compact-reader .context-frame > :not(.context-rows) { flex-shrink: 0; }
+.compact-reader .continuous-reader .context-rows {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow-y: scroll;
+}
+.compact-reader .context-frame > label,
+.compact-reader .context-frame > p { margin: 6px 12px; }
+.compact-reader .continuous-reader .context-pagination { background: #fff; }

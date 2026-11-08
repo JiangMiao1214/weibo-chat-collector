@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS group_members (
 );
 
 CREATE TABLE IF NOT EXISTS collection_jobs (
+    recovery_max_pages INTEGER NOT NULL DEFAULT 0,
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_id INTEGER NOT NULL,
     group_id INTEGER NOT NULL,
@@ -310,3 +311,109 @@ CREATE INDEX IF NOT EXISTS idx_weibo_verification_reports_status ON weibo_verifi
 CREATE INDEX IF NOT EXISTS idx_weibo_interface_observations_report_id ON weibo_interface_observations(report_id);
 CREATE INDEX IF NOT EXISTS idx_browser_page_captures_account_group ON browser_page_captures(account_id, group_id);
 CREATE INDEX IF NOT EXISTS idx_browser_page_captures_created_at ON browser_page_captures(created_at);
+
+-- Archive metadata is separate from collection transactions; originals stay on disk.
+CREATE TABLE IF NOT EXISTS archive_groups (
+    group_id INTEGER PRIMARY KEY REFERENCES chat_groups(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES weibo_accounts(id),
+    enabled INTEGER NOT NULL DEFAULT 1,
+    paused INTEGER NOT NULL DEFAULT 0,
+    reason TEXT,
+    scan_id INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS archive_jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    parent_id INTEGER REFERENCES archive_jobs(id) ON DELETE CASCADE,
+    source_url TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    retry_at REAL NOT NULL DEFAULT 0,
+    error TEXT,
+    local_path TEXT,
+    mime_type TEXT,
+    file_size INTEGER,
+    content_hash TEXT,
+    stored_at TEXT,
+    UNIQUE(message_id, source_url, kind)
+);
+CREATE INDEX IF NOT EXISTS idx_archive_jobs_state ON archive_jobs(status, retry_at, id);
+CREATE INDEX IF NOT EXISTS idx_archive_jobs_message ON archive_jobs(message_id);
+CREATE TABLE IF NOT EXISTS archive_runtime (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    owner TEXT,
+    expires_at REAL NOT NULL DEFAULT 0,
+    next_at REAL NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO archive_runtime(id) VALUES(1);
+
+CREATE TABLE IF NOT EXISTS archive_resources (
+    parent_id INTEGER NOT NULL REFERENCES archive_jobs(id) ON DELETE CASCADE,
+    job_id INTEGER NOT NULL REFERENCES archive_jobs(id) ON DELETE CASCADE,
+    PRIMARY KEY(parent_id, job_id)
+);
+INSERT OR IGNORE INTO archive_resources(parent_id,job_id)
+SELECT parent_id,id FROM archive_jobs WHERE parent_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS archive_failures (
+    job_id INTEGER PRIMARY KEY REFERENCES archive_jobs(id) ON DELETE CASCADE,
+    failure_url TEXT
+);
+
+CREATE TABLE IF NOT EXISTS archive_https_hosts (
+    account_id INTEGER NOT NULL REFERENCES weibo_accounts(id) ON DELETE CASCADE,
+    host TEXT NOT NULL,
+    PRIMARY KEY(account_id,host)
+);
+
+CREATE TABLE IF NOT EXISTS archive_resource_keys (
+    job_id INTEGER PRIMARY KEY REFERENCES archive_jobs(id) ON DELETE CASCADE,
+    url_hash TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_archive_resource_keys_url ON archive_resource_keys(url_hash);
+
+-- References carry provenance. Manual choices never become platform-confirmed links.
+CREATE TABLE IF NOT EXISTS message_references (
+    message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    target_message_id INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    target_source_id TEXT,
+    method TEXT NOT NULL CHECK(method IN ('source_id','manual')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_message_references_target ON message_references(target_message_id);
+CREATE TABLE IF NOT EXISTS message_reference_dismissals (
+    message_id INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE
+);
+
+-- OCR stores text once per account/hash/engine; the original remains in archives.
+CREATE TABLE IF NOT EXISTS ocr_groups (
+ group_id INTEGER PRIMARY KEY REFERENCES chat_groups(id) ON DELETE CASCADE,
+ account_id INTEGER NOT NULL REFERENCES weibo_accounts(id), paused INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS ocr_results (
+ id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL REFERENCES weibo_accounts(id),
+ content_hash TEXT NOT NULL, engine TEXT NOT NULL, text TEXT NOT NULL,
+ created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(account_id,content_hash,engine)
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS ocr_text_index USING fts5(text,content='ocr_results',content_rowid='id',tokenize='trigram');
+CREATE TRIGGER IF NOT EXISTS ocr_index_insert AFTER INSERT ON ocr_results BEGIN
+ INSERT INTO ocr_text_index(rowid,text) VALUES(NEW.id,NEW.text);
+END;
+CREATE TRIGGER IF NOT EXISTS ocr_index_delete AFTER DELETE ON ocr_results BEGIN
+ INSERT INTO ocr_text_index(ocr_text_index,rowid,text) VALUES('delete',OLD.id,OLD.text);
+END;
+CREATE TABLE IF NOT EXISTS ocr_jobs (
+ archive_id INTEGER PRIMARY KEY REFERENCES archive_jobs(id) ON DELETE CASCADE,
+ content_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued', error_code TEXT,
+ result_id INTEGER REFERENCES ocr_results(id), updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ocr_jobs_state ON ocr_jobs(status,archive_id);
+CREATE TABLE IF NOT EXISTS ocr_runtime (
+ id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT, expires_at REAL NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO ocr_runtime(id) VALUES(1);
+CREATE TRIGGER IF NOT EXISTS ocr_result_cleanup AFTER DELETE ON ocr_jobs BEGIN
+ DELETE FROM ocr_results WHERE id=OLD.result_id AND NOT EXISTS(SELECT 1 FROM ocr_jobs WHERE result_id=OLD.result_id);
+END;

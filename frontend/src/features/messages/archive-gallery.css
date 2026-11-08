@@ -1,0 +1,13 @@
+.archive-gallery {display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;}
+.archive-gallery > button {padding:3px; background:transparent; max-width:160px;}
+.archive-gallery > button img {display:block; width:140px; height:105px; object-fit:contain;}
+.archive-lightbox {width:min(1100px, 94vw); max-width:94vw; height:90vh; padding:12px; border:1px solid #cadbdc; border-radius:12px;}
+.archive-lightbox::backdrop {background:rgba(10,20,25,.75);}
+.archive-lightbox header,.archive-lightbox footer {display:flex; gap:12px; align-items:center; justify-content:space-between; flex-wrap:wrap;}
+.archive-image-stage {height:calc(100% - 110px); overflow:auto; display:grid; place-items:center; margin:12px 0;}
+.archive-image-stage img {max-width:100%; max-height:100%; object-fit:contain;}
+.archive-image-stage.original-size {display:block;}
+.archive-image-stage.original-size img {max-width:none; max-height:none;}
+.archive-maintenance {margin:16px 0; padding-top:12px; border-top:1px solid #dce6ec;}
+.archive-maintenance button {margin:4px;}
+.archive-maintenance p {overflow-wrap:anywhere;}

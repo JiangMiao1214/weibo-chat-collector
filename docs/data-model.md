@@ -1,5 +1,13 @@
 # 当前数据模型
 
+2026-10-21：TEST-002–004 已实现：仅允许预览确认后删除无历史账号及空群/本机凭据；所有配置与导入入口限制一账号一群，旧多群原样保留并提示待整理；小时区仅在日期生效时显示，清日期同步清小时。没有更改表结构或自动迁移真实关联。范围和验收见 [测试问题记录](testing-issues.md)。
+
+2026-10-12 更新：已新增连续上下文、有界补采集、统计/日志页及本地 OCR，新增 `activity_events`、OCR 队列/结果/索引表与补采集页数上限；备份恢复及管理停用会暂停 OCR。最新契约见 [F4–F7 使用说明](reader-insights-ocr.md)，下方此前记录保留历史语义。
+
+2026-10-09：新增 `message_references`（消息外键、目标本地/源 ID、来源方法及时间）和 `message_reference_dismissals`（明确解除标记），启动兼容建表并回填标准化导入字段。账号/群管理复用既有资料和启用字段。详见 [永久引用](permanent-references.md) 与 [管理页](target-management.md)。
+
+2026-09-13 本地归档更新：图片原文件、微博正文快照、直链视频和文件现可按群排队保存，并优先离线打开。使用步骤、格式限制和验证记录见 [本地归档](local-archives.md)。
+
 更新时间：2026-08-12
 
 SQLite schema 位于 `scripts/schema.sql`。后端启动时会初始化新表，并为旧数据库补齐 API v2 任务字段。
@@ -43,6 +51,8 @@ SQLite schema 位于 `scripts/schema.sql`。后端启动时会初始化新表，
 - `notes`
 - `created_at`
 - `updated_at`
+
+用户身份识别（2026-10-21，TEST-007）：已知 `source_user_id` 只能命中同 UID；不会仅凭昵称复用无 UID 用户。无 UID 历史保持原 `user_id`，不同 UID 同名消息在后备去重中互不合并。同 UID 改昵称继续复用用户，较旧消息不覆盖较新昵称。新导入缺失/null/空字符串 UID 统一按无 UID 处理；没有 schema 迁移或真实历史自动合并。
 
 ### group_members
 

@@ -1,0 +1,32 @@
+.quote-lookup-trigger { display: block; margin-top: 6px; text-decoration: underline; text-underline-offset: 3px; }
+.quote-context-dialog {
+  box-sizing: border-box; width: min(780px, calc(100vw - 28px)); max-height: calc(100vh - 40px);
+  border: 1px solid #cbdedb; border-radius: 12px; padding: 20px; color: #25373e; background: #fff;
+  box-shadow: 0 20px 80px #102a3840; overflow: auto;
+}
+.quote-context-dialog::backdrop { background: #132e405e; }
+.quote-context-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.quote-context-heading h2 { margin: 0; font-size: 18px; }
+.quote-context-heading button { flex-shrink: 0; }
+.quote-context-note { font-size: 12px; line-height: 1.7; color: #576b76; }
+.quote-context-list { max-height: 58vh; overflow: auto; background: #f5f8f9; padding: 10px; border-radius: 8px; }
+.quote-context-message { margin: 8px 0; padding: 12px; border: 1px solid #dfe6e9; border-radius: 8px; background: #fff; }
+.quote-context-message.is-target { border: 2px solid #20756f; background: #eef8f4; }
+.quote-context-message header { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.quote-context-message header span, .quote-context-message small { color: #536976; }
+.quote-context-message p { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.7; }
+.quote-context-attachment { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; margin: 8px 0; overflow-wrap: anywhere; }
+.quote-context-dialog :is(button, a):focus-visible { outline: 2px solid #20756f; outline-offset: 3px; }
+@media (max-width: 600px) {
+  .quote-context-dialog { padding: 12px; }
+  .quote-context-heading h2 { font-size: 16px; }
+  .quote-context-list { padding: 6px; }
+}
+
+.reference-editor {border-top:1px solid #dce5ea; padding-top:12px; margin-top:14px;}
+.reference-editor button {margin:4px 6px 4px 0;}
+.reference-editor input {margin:8px; padding:7px; border:1px solid #bfd0d9; border-radius:5px;}
+
+.reference-editor button {font:inherit; font-size:14px; border:1px solid #bfd0d9; color:#245c62; background:#fff; border-radius:6px; padding:7px 11px; cursor:pointer;}
+.reference-editor button:hover {background:#eff8f6;}
+.reference-editor button:disabled {opacity:.5; cursor:default;}

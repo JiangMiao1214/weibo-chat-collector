@@ -1,6 +1,14 @@
 # 消息列表与搜索 API
 
-更新时间：2026-08-25
+2026-09-13 更新：消息与上下文改为旧到新，引用入口和附件展示去重，新增按账号读取图片的受控入口。最新契约与验证见 [消息展示修复](message-display-fixes.md)。
+
+前端展示说明见 [消息列表改版](message-list-redesign.md)。2026-09-08 新增独立只读引用上下文端点，原消息列表的分页/筛选和删除接口契约保持不变；未新增引用源 ID 或附件二进制字段。
+
+更新时间：2026-09-12
+
+新增 `viewer` JSON 字符串筛选、列表 `link_previews` 白名单字段及 `/api/message-view/` 下的 facets/context/matches/export 只读端点。完整字段、参数限制和统计口径见 [阅读器 API 契约](message-reader.md#api-契约)。`viewer` 同时应用于原删除/恢复预览与执行接口；旧调用省略该参数保持兼容。
+
+截图修订：context 支持 `direction=center|older|newer`，方向页最多 5 条且排除游标；错误范围 404、方向非法 422。对应 `message_type` 与 `viewer.media` 合并成一个媒体条件，冲突 422，不再重复相交；仅传标准类型的旧请求仍精确筛选。前端已取消丰富预览，只使用安全 URL；接口兼容字段不删除。细节见 [修订契约](reader-simplification.md#后端契约变化)。
 
 本页保留已经实现的消息列表、详情和筛选项接口说明；采集任务状态与运行方式请看 `collection-jobs.md`。
 
@@ -45,6 +53,7 @@ GET /api/messages
 - `keyword`
 - `message_type`
 - `has_attachment`
+- `viewer`：JSON 字符串，支持 members/hours/media/hide_noise，非法条件返回 422。
 - `include_deleted`
 - `deleted_only`
 - `limit`
@@ -125,6 +134,10 @@ GET /api/messages/{message_id}
 - 用户名。
 - 原始 payload。
 - 附件列表。
+
+### 引用定位与上下文
+
+引用定位另有只读端点：`GET /api/messages/{message_id}/quote-context?account_id=1&group_id=11&deleted_only=false`。路径 ID 是原引用消息；后端在同账号、同群、同删除状态中做完整文字匹配，唯一匹配返回目标和前后各最多 5 条上下文。无匹配/重复/格式不支持有明确状态，错误范围返回 404，非法参数返回 422。完整契约见 [引用上下文](quote-context.md)。它忽略日期等内容筛选，但不改变原列表和删除范围。
 
 ### 删除预览
 
@@ -228,6 +241,8 @@ POST /api/messages/hard-delete
 ```
 
 彻底删除只作用于回收站中的消息。当前会删除数据库中的附件记录、搜索索引记录和消息记录，不删除磁盘上的附件原件。
+
+2026-10-21（TEST-005–006）：`hard-delete` 在写事务内先固定命中 ID，再按固定范围删除附件、索引、消息，失败整体回滚；附件筛选不因中途删除而丢失目标。返回的 `preview_count` 是执行事务内的匹配数，`deleted_count` 与该集合一致。请求字段和原件保留策略不变。前端三类批量操作的预览与确认绑定同一操作/视图/筛选快照，过期预览不可执行，详见 [回收站](recycle-bin.md)。
 
 ## 前端页面
 

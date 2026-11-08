@@ -1,0 +1,26 @@
+{
+  "metrics": {
+    "lines:backend/app/api/browser_captures.py": 1229,
+    "complexity:backend/app/api/browser_captures.py:module/parse_capture_messages": 29,
+    "lines:backend/app/api/collection_jobs.py": 471,
+    "lines:backend/app/api/messages.py": 714,
+    "lines:backend/app/api/weibo_api.py": 442,
+    "lines:backend/app/collectors/weibo_api.py": 1023,
+    "complexity:backend/app/collectors/weibo_api.py:module/_map_attachments": 22,
+    "lines:backend/app/importer.py": 625,
+    "lines:backend/app/services/browser_login_manager.py": 537,
+    "complexity:backend/app/services/browser_login_manager.py:module/BrowserLoginManager/handle_event": 25,
+    "lines:backend/app/services/collection_runner.py": 469,
+    "complexity:backend/app/services/collection_runner.py:module/ingest_api_page": 26,
+    "lines:backend/app/services/collection_worker.py": 791,
+    "complexity:backend/app/services/collection_worker.py:module/CollectionWorker/_process_job": 24,
+    "complexity:backend/app/services/message_filter.py:module/classify_message_filter": 28,
+    "lines:frontend/src/App.tsx": 2807,
+    "complexity:frontend/src/App.tsx:module/App": 85,
+    "complexity:frontend/src/App.tsx:module/App/callback": 39,
+    "complexity:frontend/src/features/messages/MessageWorkspace.tsx:module/MessageWorkspace": 23
+  },
+  "duplicates": [
+    "backend/app/database.py:module/connection_context | backend/app/database.py:module/get_connection"
+  ]
+}

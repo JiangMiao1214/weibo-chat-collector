@@ -1,3 +1,4 @@
+from ..services.target_management import group_has_history, ensure_group_identity_can_change, check_group_slot, write_lock
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 import sqlite3
@@ -76,46 +77,6 @@ def public_collection_error(error: Exception) -> str:
     return "Collection failed because of an unexpected local error."
 
 
-def group_has_history(connection: sqlite3.Connection, group_id: int) -> bool:
-    """Whether changing this group's remote identity could mix archived data."""
-
-    for table_name in (
-        "messages",
-        "collection_jobs",
-        "browser_page_captures",
-        "import_batches",
-        "weibo_verification_reports",
-    ):
-        row = connection.execute(
-            f"SELECT 1 FROM {table_name} WHERE group_id = ? LIMIT 1",
-            (group_id,),
-        ).fetchone()
-        if row is not None:
-            return True
-    return False
-
-
-def ensure_group_identity_can_change(
-    connection: sqlite3.Connection,
-    *,
-    group_id: int,
-    current_source_group_id: str | None,
-    requested_source_group_id: str,
-) -> None:
-    if (
-        current_source_group_id
-        and current_source_group_id != requested_source_group_id
-        and group_has_history(connection, group_id)
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "This group already has archived history and cannot be rebound to a different "
-                "Weibo group ID. Create a new local group instead."
-            ),
-        )
-
-
 def load_target(
     connection: sqlite3.Connection,
     account_id: int,
@@ -164,6 +125,7 @@ def upsert_api_target(
     request: UpsertApiTargetRequest,
     connection: sqlite3.Connection = Depends(get_connection),
 ) -> dict[str, Any]:
+    write_lock(connection)
     if request.account_id is not None:
         account = connection.execute(
             "SELECT id FROM weibo_accounts WHERE id = ?",
@@ -250,6 +212,7 @@ def upsert_api_target(
             (account_id, request.group_name),
         ).fetchone()
         if group is None:
+            check_group_slot(connection, account_id)
             cursor = connection.execute(
                 """
                 INSERT INTO chat_groups (account_id, name, source_group_id, description)
@@ -301,6 +264,7 @@ def save_account_cookies(
     request: SaveAccountCookiesRequest,
     connection: sqlite3.Connection = Depends(get_connection),
 ) -> dict[str, Any]:
+    write_lock(connection)
     account = connection.execute(
         "SELECT id FROM weibo_accounts WHERE id = ?",
         (account_id,),

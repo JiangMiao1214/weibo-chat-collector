@@ -5,6 +5,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from ..database import get_connection
+from ..services.view_filters import viewer_conditions, use_standard_type
+from ..services.link_previews import enrich_items
+from ..services.message_detail import read_message_detail
 
 
 router = APIRouter(prefix="/api", tags=["messages"])
@@ -16,6 +19,7 @@ def row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 class MessageFilterPayload(BaseModel):
+    viewer: str | None = None
     account_id: int | None = None
     account: str | None = None
     group_id: int | None = None
@@ -73,6 +77,7 @@ def build_message_filters(
     has_attachment: bool | None,
     include_deleted: bool,
     deleted_only: bool = False,
+    viewer: str | None = None,
 ) -> tuple[list[str], list[Any]]:
     filters = []
     params: list[Any] = []
@@ -110,7 +115,7 @@ def build_message_filters(
         filters.append("m.sent_at <= ?")
         params.append(date_to)
 
-    if message_type:
+    if use_standard_type(message_type, viewer):
         filters.append("m.message_type = ?")
         params.append(message_type)
 
@@ -155,7 +160,8 @@ def build_message_filters(
             ]
         )
 
-    return filters, params
+    extra_filters, extra_params = viewer_conditions(viewer)
+    return [*filters, *extra_filters], [*params, *extra_params]
 
 
 def build_where_sql(filters: list[str]) -> str:
@@ -180,6 +186,7 @@ def build_filters_from_payload(
         has_attachment=payload.has_attachment,
         include_deleted=include_deleted,
         deleted_only=deleted_only,
+        viewer=payload.viewer,
     )
 
 
@@ -311,6 +318,7 @@ def get_filter_options(
 
 @router.get("/messages")
 def list_messages(
+    viewer: str | None = None,
     account_id: int | None = None,
     account: str | None = None,
     group_id: int | None = None,
@@ -342,6 +350,7 @@ def list_messages(
         has_attachment=has_attachment,
         include_deleted=include_deleted,
         deleted_only=deleted_only,
+        viewer=viewer,
     )
     total = count_matching_messages(connection, filters, params)
     attachment_summary = summarize_matching_attachments(connection, filters, params)
@@ -393,7 +402,7 @@ def list_messages(
 
     has_more = len(rows) > limit
     page_rows = rows[:limit]
-    items = [row_to_dict(row) for row in page_rows]
+    items = enrich_items(connection, [row_to_dict(row) for row in page_rows])
     next_cursor = None
     if has_more and items:
         last_item = items[-1]
@@ -612,39 +621,33 @@ def hard_delete_messages(
         include_deleted=True,
         deleted_only=True,
     )
-    where_sql = build_where_sql(filters)
-    preview_count = count_matching_messages(connection, filters, params)
-
-    message_id_subquery = f"""
+    # Hold the write transaction before taking the snapshot. Attachment-dependent
+    # conditions must never be re-evaluated after the attachments are removed.
+    # The connection dependency commits all steps together or rolls them back.
+    if not connection.in_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    connection.execute("CREATE TEMP TABLE hard_delete_targets (id INTEGER PRIMARY KEY)")
+    connection.execute(
+        f"""INSERT INTO hard_delete_targets (id)
         SELECT m.id
         FROM messages m
         JOIN weibo_accounts wa ON wa.id = m.account_id
         JOIN chat_groups cg ON cg.id = m.group_id
         JOIN chat_users cu ON cu.id = m.user_id
-        {where_sql}
-    """
-
-    attachment_cursor = connection.execute(
-        f"""
-        DELETE FROM attachments
-        WHERE message_id IN ({message_id_subquery})
-        """,
+        {build_where_sql(filters)}""",
         params,
+    )
+    preview_count = int(connection.execute("SELECT COUNT(*) FROM hard_delete_targets").fetchone()[0])
+    attachment_cursor = connection.execute(
+        "DELETE FROM attachments WHERE message_id IN (SELECT id FROM hard_delete_targets)"
     )
     connection.execute(
-        f"""
-        DELETE FROM search_indexes
-        WHERE message_id IN ({message_id_subquery})
-        """,
-        params,
+        "DELETE FROM search_indexes WHERE message_id IN (SELECT id FROM hard_delete_targets)"
     )
     message_cursor = connection.execute(
-        f"""
-        DELETE FROM messages
-        WHERE id IN ({message_id_subquery})
-        """,
-        params,
+        "DELETE FROM messages WHERE id IN (SELECT id FROM hard_delete_targets)"
     )
+    connection.execute("DROP TABLE hard_delete_targets")
 
     return {
         "preview_count": preview_count,
@@ -656,59 +659,6 @@ def hard_delete_messages(
 
 
 @router.get("/messages/{message_id}")
-def get_message_detail(
-    message_id: int,
-    include_deleted: bool = False,
-    connection: sqlite3.Connection = Depends(get_connection),
-) -> dict[str, Any]:
-    deleted_filter = "" if include_deleted else "AND m.is_deleted = 0"
-    row = connection.execute(
-        f"""
-        SELECT
-            m.*,
-            wa.display_name AS account_name,
-            cg.name AS group_name,
-            cu.display_name AS sender_name,
-            cu.source_user_id
-        FROM messages m
-        JOIN weibo_accounts wa ON wa.id = m.account_id
-        JOIN chat_groups cg ON cg.id = m.group_id
-        JOIN chat_users cu ON cu.id = m.user_id
-        WHERE m.id = ?
-        {deleted_filter}
-        """,
-        (message_id,),
-    ).fetchone()
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="Message not found")
-
-    attachments = [
-        row_to_dict(attachment)
-        for attachment in connection.execute(
-            """
-            SELECT
-                id,
-                attachment_type,
-                source_url,
-                local_path,
-                file_name,
-                mime_type,
-                file_size,
-                content_hash,
-                title,
-                description,
-                download_status,
-                downloaded_at,
-                created_at
-            FROM attachments
-            WHERE message_id = ?
-            ORDER BY id
-            """,
-            (message_id,),
-        )
-    ]
-
-    result = row_to_dict(row)
-    result["attachments"] = attachments
-    return result
+def get_message_detail(message_id: int, include_deleted: bool = False,
+                       connection: sqlite3.Connection = Depends(get_connection)) -> dict[str, Any]:
+    return read_message_detail(message_id, include_deleted, connection)

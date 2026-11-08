@@ -1,6 +1,6 @@
 # 运行与调试指南
 
-更新时间：2026-08-25
+更新时间：2026-09-07
 
 ## 环境与路径
 
@@ -48,6 +48,8 @@ npm --prefix browser-helper install
 ```
 
 后端启动时会：
+
+先读取 `docs/tdd-development.md` 的提醒块，在终端打印 TDD 规则，再执行以下初始化。提醒不自动运行测试；文档缺失时后端明确警告，但不阻止已有服务启动。
 
 1. 初始化/迁移 SQLite schema。
 2. 初始化 `collector_runtime_state` 单例。
@@ -287,25 +289,29 @@ curl -X POST http://127.0.0.1:8000/api/collection-jobs/1/resume
 
 ## 本地自动化测试
 
-从项目根目录执行：
+统一入口与 VS Code 逐步操作见 [TDD 开发规范](tdd-development.md)。本轮证据见 [实施记录](tdd-implementation-record.md)。从项目根目录首次安装开发依赖后执行：
 
 ```bash
-.venv/bin/python -m unittest discover -s backend/tests -p 'test_*.py' -v
-npm --prefix browser-helper test
-npm --prefix frontend run typecheck
-npm --prefix frontend run build
+.venv/bin/python -m pip install -r backend/requirements-dev.txt
+npm --prefix frontend ci
+npm --prefix browser-helper ci
+.venv/bin/python scripts/verify.py --fast
+.venv/bin/python scripts/verify.py
 ```
 
 Windows：
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s .\backend\tests -p 'test_*.py' -v
-npm --prefix browser-helper test
-npm --prefix frontend run typecheck
-npm --prefix frontend run build
+.\.venv\Scripts\python.exe -m pip install -r backend/requirements-dev.txt
+npm --prefix frontend ci
+npm --prefix browser-helper ci
+.\.venv\Scripts\python.exe scripts/verify.py --fast
+.\.venv\Scripts\python.exe scripts/verify.py
 ```
 
-这些测试使用临时 SQLite、mock 响应或直接函数调用，不访问真实微博网络，也不覆盖真实附件下载和完整前端浏览器链路。
+快速检查包含后端业务/HTTP 测试、检查脚本自测、助手协议、前端交互/轮询、类型构建和结构约束；完整检查还运行 4 个定向变异和隔离浏览器点击流程。测试用临时 SQLite 和模拟 API，不访问真实微博网络，不覆盖真实附件下载。浏览器流程无需扫码或先开常规服务；使用随机本地端口，缺浏览器时可设置 `TDD_CHROME_PATH`。
+
+VS Code：命令面板 → `Tasks: Run Task` → `TDD: 快速检查` / `TDD: 完整验收`。普通 `npm --prefix frontend run dev` 会先从 TDD 文档打印提醒。测试报告分别保存于 `.tdd-results/fast/`、`.tdd-results/full/`，必须同时确认最后的 `PASS` 和退出码 0。
 
 ## 浏览器登录故障排查
 
@@ -327,4 +333,4 @@ npm --prefix frontend run build
 - 所有消息类型，尤其文件和视频字段，都已确认。
 - 附件原件访问和下载已经验证。
 
-当前 UI 交付以桌面端为主，移动端任务宽表与确认/停止/续传流程的完整验证延后。
+2026-10-09：按用户要求只规划桌面端，移动端全面适配移出计划；保留现有响应式行为及回归测试。

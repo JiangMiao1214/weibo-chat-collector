@@ -2,6 +2,21 @@
 
 微博群聊消息的本地采集、归档、检索和管理工具。当前主线保留 collector 的多账号、群聊配置、SQLite 落库和消息管理能力，以微博 Web 客户端的内部 JSON 接口作为主要采集来源。
 
+## 开发规则与 TDD
+
+后续修改按 [TDD 开发规范](docs/tdd-development.md) 执行：先写失败测试、最小实现、整理代码、回归验收。根目录 `AGENTS.md` 提醒开发助手读取规范；正常前后端启动也会从同一文档打印提醒。提醒本身不等于测试通过。
+
+本机已落地五步首批能力，含多账号 HTTP 回归、前端交互与浏览器测试、模块拆分/结构基线、4 个定向变异以及统一检查；详见 [实施记录](docs/tdd-implementation-record.md)。
+
+首次开发安装 `backend/requirements-dev.txt`，并安装前端和浏览器助手依赖后，从根目录执行：
+
+```bash
+.venv/bin/python scripts/verify.py --fast  # 每次小改动
+.venv/bin/python scripts/verify.py         # 交付前完整验收
+```
+
+VS Code：命令面板 → `Tasks: Run Task` → `TDD: 完整验收`。检查使用隔离数据，无需先启动普通服务或扫码。Windows 使用 `.\.venv\Scripts\python.exe`。远端 CI 工作流已配置，但阻止合并还需要远端启用必需检查。
+
 ## 当前架构
 
 `weibo-chat-collector` 是主项目，负责账号与群聊配置、采集队列、严格时间范围过滤、逐页落库、断点续传、监控、检索和删除。
@@ -92,6 +107,8 @@ npm --prefix frontend run dev
 
 ## UI 使用流程
 
+消息阅读：进入“消息”，顶部选择账号、群和日期立即生效；左侧成员多选，中间小时/类型筛选与正文查找。右侧详情/上下文按需打开，上下文可独立翻更早/更新页，支持未加载目标跳转及返回原列表。链接仅保留可点击地址，丰富预览已按新需求取消；可导出全部筛选结果 TXT。界面为简洁白底；高级筛选、批量操作与详细统计默认收起，无需重新采集。详细步骤见 [明亮消息阅读器](docs/message-reader.md) 和 [截图问题修订与验收](docs/reader-simplification.md)。
+
 首次配置：
 
 1. 在“高级工具 / 数据导入”中创建账号和属于该账号的群聊；群 ID 可暂时留空。
@@ -121,7 +138,7 @@ npm --prefix frontend run dev
 
 JSON/CSV 和网页快照不占微博 API 队列。文件导入继续保留；网页跨域快照受 CORS、Private Network Access 和页面安全策略影响，已不再是推荐主流程。
 
-当前交付以桌面端为目标。前端虽然有基础响应式样式，但移动端任务监控、宽表操作和完整交互验证延后处理。
+2026-10-09：按用户要求只规划桌面端，移动端全面适配移出计划；保留现有响应式行为及回归测试。
 
 ## 验证边界
 
@@ -140,6 +157,14 @@ JSON/CSV 和网页快照不占微博 API 队列。文件导入继续保留；网
 
 ## 文档
 
+- [明亮消息阅读器](docs/message-reader.md)（完成清单、VS Code 步骤、统一筛选/上下文/链接/导出/查找）
+- [页面简化修订](docs/reader-simplification.md)（上下文翻页修复、顶部日期、阅读空间、类型去重及 TDD 记录）
+- [账号与群聊管理](docs/target-management.md)（独立页面、启停、凭据与归档入口）
+- [永久引用关系](docs/permanent-references.md)（人工确认、明确目标源 ID 与已知限制）
+- [连续阅读、统计、日志与本地 OCR](docs/reader-insights-ocr.md)（F4–F7 使用方法、中文识别基准与边界）
+- [功能完成度总览](docs/feature-status.md)（已实现、待实机验证、尚未实现）
+- [引用定位与上下文](docs/quote-context.md)（定位已入库但尚未加载的原文，查看上下文并返回原列表）
+- [消息列表改版与验证步骤](docs/message-list-redesign.md)（聊天布局、正文链接、有限引用定位）
 - [微博 API 采集指南](docs/weibo-api-collection.md)
 - [采集任务与监控](docs/collection-jobs.md)
 - [当前状态与下一步](docs/current-status.md)
@@ -164,3 +189,5 @@ weibo-chat-collector/
   docs/
   scripts/
 ```
+
+归档维护、备份恢复、图片灯箱与续传操作见 [归档完善](docs/archive-maintenance.md)。

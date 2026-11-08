@@ -25,26 +25,12 @@ from ..collectors.weibo_api import (
 )
 from ..database import connection_context
 from ..settings import Settings, get_settings
+from .collection_limits import job_settings
+from .collection_time import utc_now_text, parse_utc_text
 from .collection_runner import CollectionLeaseLostError, ingest_api_page
 
 
-UTC_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 RISK_COOLDOWN_CODES = {"http_429", "api_10023", "api_10024"}
-
-
-def utc_now_text(now: datetime | None = None) -> str:
-    value = now or datetime.now(timezone.utc)
-    return value.astimezone(timezone.utc).replace(tzinfo=None).strftime(UTC_FORMAT)
-
-
-def parse_utc_text(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
 
 class CollectionWorker:
     """One persisted, globally serial worker for all Weibo API collection jobs."""
@@ -255,7 +241,7 @@ class CollectionWorker:
         attempt_id: int | None = None
         lease_was_lost = False
         try:
-            settings = self.settings_provider()
+            settings = job_settings(self.settings_provider(), initial_job)
             zone = ZoneInfo(str(initial_job["timezone_name"] or settings.weibo_api_timezone))
             range_start = datetime.fromisoformat(str(initial_job["range_start"])).replace(tzinfo=zone)
             range_end = datetime.fromisoformat(str(initial_job["range_end"])).replace(tzinfo=zone)

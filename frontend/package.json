@@ -1,5 +1,9 @@
 {
   "scripts": {
+    "test:e2e": "node --test --test-reporter=tap tests/*.test.mjs",
+    "predev": "node ../scripts/tdd-reminder.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build",
@@ -14,7 +18,13 @@
     "vite": "^6.0.7"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "@types/node": "^22.20.1",
     "@types/react": "^18.3.31",
-    "@types/react-dom": "^18.3.7"
+    "@types/react-dom": "^18.3.7",
+    "jsdom": "^26.1.0",
+    "vitest": "^3.2.7"
   }
 }

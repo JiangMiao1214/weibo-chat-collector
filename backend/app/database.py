@@ -4,12 +4,15 @@ from pathlib import Path
 from typing import Iterator
 
 from .settings import PROJECT_ROOT, get_settings
+from .services.activity_schema import install_activity_schema
+from .services.message_references import backfill_import_references
 
 
 SCHEMA_PATH = PROJECT_ROOT / "scripts" / "schema.sql"
 
 
 COLLECTION_JOB_COLUMN_MIGRATIONS = {
+    "recovery_max_pages": "INTEGER NOT NULL DEFAULT 0",
     "source_group_id": "TEXT",
     "timezone_name": "TEXT NOT NULL DEFAULT 'Asia/Shanghai'",
     "page_size": "INTEGER NOT NULL DEFAULT 20",
@@ -87,6 +90,8 @@ def apply_database_migrations(
 
     connection.executescript(schema_path.read_text(encoding="utf-8"))
     connection.executescript(POST_SCHEMA_MIGRATIONS)
+    install_activity_schema(connection)
+    backfill_import_references(connection)
     connection.execute(
         """
         UPDATE collection_jobs

@@ -1,0 +1,18 @@
+.management-page {padding:24px; background:#fff; border:1px solid #dce5ea; border-radius:12px; margin:16px 0;}
+.management-page header,.management-actions {display:flex; align-items:center; flex-wrap:wrap; gap:10px;}
+.management-page header {justify-content:space-between;}
+.management-grid {display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:16px; margin-top:20px;}
+.management-card,.management-editor {border:1px solid #dce5ea; border-radius:10px; padding:20px; overflow-wrap:anywhere;}
+.management-card p,.management-editor p {line-height:1.7; color:#4d626e;}
+.management-card small {font-size:12px; font-weight:normal;}
+.management-editor {background:#f2f9f8; margin:20px 0; max-width:760px;}
+.management-editor label {display:block; margin:12px 0;}
+.management-editor input:not([type=checkbox]),.management-editor textarea,.management-editor select {display:block; width:100%; padding:8px; border:1px solid #b7cdd0; border-radius:5px;}
+.management-editor button {margin-right:10px;}
+
+.management-page button {font:inherit; font-size:14px; border:1px solid #bfd0d9; color:#245c62; background:#fff; border-radius:6px; padding:7px 11px; cursor:pointer;}
+.management-page button:hover {background:#eff8f6;}
+.management-page button:disabled {opacity:.5; cursor:default;}
+.management-page button:focus-visible {outline:2px solid #20756f; outline-offset:3px;}
+.management-page > label select {margin-left:10px; padding:6px 10px; border:1px solid #bfd0d9; border-radius:5px;}
+.management-editor button[type=submit] {background:#20756f; color:#fff;}

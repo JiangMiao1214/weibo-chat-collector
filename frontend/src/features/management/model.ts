@@ -1,0 +1,12 @@
+import type {CookieProfileStatus} from '../../shared/contracts';
+export type ManagedAccount={id:number;display_name:string;notes:string|null;is_active:number;group_count:number;
+ message_count:number;cookie_profile:CookieProfileStatus};
+export type ManagedGroup={id:number;account_id:number;account_name:string;name:string;description:string|null;
+ source_group_id:string|null;is_active:number;message_count:number;attachment_count:number;
+ first_message_at:string|null;last_message_at:string|null;archive:null|{paused:number;reason:string|null};
+ archive_counts:Record<string,number>;latest_collection:null|{id:number;status:string;created_at:string}};
+export type Overview={accounts:ManagedAccount[];groups:ManagedGroup[]};
+export type Navigate=(view:'active'|'jobs'|'monitor',accountId:number,groupId?:number)=>void;
+export type AccountForm={display_name:string;notes:string;is_active:boolean};
+export type GroupForm={account_id:number;name:string;description:string;source_group_id:string|null;is_active:boolean};
+export const stateLabels:Record<string,string>={queued:'排队中',awaiting_confirmation:'待确认',running:'运行中',stopped:'已停止',completed:'已完成',failed:'失败',cancelled:'已取消',pending:'待执行'};
